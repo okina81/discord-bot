@@ -1,12 +1,18 @@
 import os
 import random
+import asyncio
 import discord
+import google.generativeai as genai
 from discord.ext import commands
 from dotenv import load_dotenv
 from playwright.async_api import async_playwright
 
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+
+genai.configure(api_key=GEMINI_API_KEY)
+gemini = genai.GenerativeModel("gemini-1.5-flash")
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -101,6 +107,24 @@ async def mac(ctx):
         await msg.delete()
         await ctx.send(embed=embed)
 
+    except Exception as e:
+        await msg.edit(content=f"エラーが発生しました: {e}")
+
+
+@bot.command()
+async def ask(ctx, *, question: str):
+    msg = await ctx.send("🤔 考え中...")
+    try:
+        response = await asyncio.to_thread(gemini.generate_content, question)
+        answer = response.text.strip()
+        embed = discord.Embed(
+            description=answer,
+            color=discord.Color.blurple(),
+        )
+        embed.set_author(name=f"{ctx.author.display_name} の質問", icon_url=ctx.author.display_avatar.url)
+        embed.set_footer(text="Powered by Google Gemini")
+        await msg.delete()
+        await ctx.send(embed=embed)
     except Exception as e:
         await msg.edit(content=f"エラーが発生しました: {e}")
 
