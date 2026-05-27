@@ -41,7 +41,7 @@ async def on_message(message):
         await poll.add_reaction("❌")
 
     if message.author.id in TARGET_USER_IDS:
-        if random.random() < 0.1:
+        if random.random() < 0.03:
             await message.reply("だぼが")
 
     if bot.user in message.mentions:
