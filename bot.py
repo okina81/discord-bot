@@ -328,6 +328,21 @@ async def apex(ctx):
 
 
 @bot.command()
+async def who(ctx):
+    embed = discord.Embed(
+        title="🤖 自己紹介",
+        color=discord.Color.og_blurple(),
+    )
+    embed.add_field(name="名前", value="今北尚杜", inline=True)
+    embed.add_field(name="住所", value="神戸市", inline=True)
+    embed.add_field(name="職業", value="職なし子供部屋おじさんだにょ", inline=False)
+    embed.add_field(name="見た目", value="台パンチビ眼鏡", inline=False)
+    embed.add_field(name="役職", value="このサーバーの奴隷です", inline=False)
+    embed.add_field(name="特技", value="破壊と近親相姦", inline=False)
+    await ctx.send(embed=embed)
+
+
+@bot.command()
 async def hello(ctx):
     await ctx.send(f"こんにちは、{ctx.author.name}さん！")
 
