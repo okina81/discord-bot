@@ -18,6 +18,7 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 RECRUIT_KEYWORDS = ["募集", "募", "ぼ"]
 TARGET_USER_IDS = [512510702129512469, 1133749381250695269]
+ALLOWED_CHANNEL_IDS = [1509231531326181406]
 
 # 原神 特産品辞書 {特産品名: (地域, 場所)}
 GENSHIN_TOKUSANHIN = {
@@ -125,6 +126,10 @@ async def on_ready():
 @bot.event
 async def on_message(message):
     if message.author.bot:
+        return
+
+    if message.channel.id not in ALLOWED_CHANNEL_IDS:
+        await bot.process_commands(message)
         return
 
     if any(kw in message.content for kw in RECRUIT_KEYWORDS):
