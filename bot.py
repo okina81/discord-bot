@@ -140,7 +140,8 @@ async def on_message(message):
         )
         embed.set_footer(text="❌ = 参加できない")
 
-        poll = await message.channel.send(embed=embed)
+        recruit_channel = bot.get_channel(1134854694645276703)
+        poll = await recruit_channel.send(embed=embed)
         await poll.add_reaction("✅")
         await poll.add_reaction("❌")
 
