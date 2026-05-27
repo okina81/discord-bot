@@ -48,7 +48,8 @@ async def on_message(message):
         await message.reply(random.choice(["マギーちゃんのビラビラおまんまん", "うおwww", "う、うおwww", "I love 高木", "いとこは禁句な？", "かわいいだけじゃ、ダメですか？", "いぇーーーーーい！！！"]))
 
     if "x.com/" in message.content or "twitter.com/" in message.content:
-        await message.reply("おま、X依存症かよw")
+        if random.random() < 1/3:
+            await message.reply("おま、X依存症かよw")
 
     await bot.process_commands(message)
 
