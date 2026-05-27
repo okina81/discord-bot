@@ -43,6 +43,9 @@ async def on_message(message):
         if random.random() < 0.1:
             await message.reply("だぼが")
 
+    if bot.user in message.mentions:
+        await message.reply("マギーちゃんのビラビラおまんまん")
+
     await bot.process_commands(message)
 
 
