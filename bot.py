@@ -286,6 +286,26 @@ async def usage(ctx):
         value="原神の特産品名を含む発言をすると\n採取場所とマップへのリンクを表示",
         inline=False,
     )
+    embed.add_field(
+        name="🎯 Apexレジェンド",
+        value="`!apex` でランダムにレジェンドを1人選出\nディスりキャッチコピー付き",
+        inline=False,
+    )
+    embed.add_field(
+        name="🔥 煽り",
+        value="`!roast @ユーザー` で指定した人を煽る",
+        inline=False,
+    )
+    embed.add_field(
+        name="🎰 罰ゲームルーレット",
+        value="`!roulette` でランダムに罰ゲームを決定\n※特定ユーザーは必ずおごり確定",
+        inline=False,
+    )
+    embed.add_field(
+        name="🤖 Bot自己紹介",
+        value="`!who` でBotのプロフィールを表示",
+        inline=False,
+    )
     embed.set_footer(text="このチャンネル専用Bot")
     await ctx.send(embed=embed)
 
