@@ -327,6 +327,50 @@ async def apex(ctx):
     await ctx.send(f"🎯 今日のレジェンドは **{legend}** だ！\n> {catchphrase}")
 
 
+ROASTS = [
+    "こいつの存在意義、マジで誰か教えてくれ",
+    "生まれてきた理由を今すぐ神に問い合わせた方がいい",
+    "こいつがいると空気の密度が下がる気がする",
+    "人生の方向性、完全に迷子やん",
+    "こいつの将来を占ったら「霧」って出た",
+    "話す内容が毎回5秒で忘れられるレベル",
+    "このサーバーの平均IQを下げてる最有力候補",
+    "存在がノイズ",
+    "こいつのポジション、空気でよくない？",
+    "生きてるだけで偉いと思ってそう（褒めてない）",
+]
+
+ROULETTES = [
+    "🍺 次の集まりで全員分おごり確定！",
+    "💪 その場で腕立て20回！",
+    "🎤 一発ギャグを披露しろ！",
+    "🍜 明日のランチは一人で吉野家",
+    "📵 24時間スマホ禁止！",
+    "🐔 次のゲームでチキンプレイ縛り",
+    "💸 500円募金しろ",
+    "🎵 一曲フルで熱唱しろ",
+    "🧹 次の集まりの片付けは全部お前",
+    "👶 今日一日「〜だにょ」口調で話せ",
+    "🤐 1時間無言縛り",
+    "🙇 全員に土下座しろ",
+]
+
+
+@bot.command()
+async def roast(ctx, member: discord.Member):
+    roast_text = random.choice(ROASTS)
+    await ctx.send(f"🔥 {member.mention}　→　{roast_text}")
+
+
+@bot.command()
+async def roulette(ctx):
+    import asyncio
+    msg = await ctx.send("🎰 ルーレット回転中...")
+    await asyncio.sleep(2)
+    result = random.choice(ROULETTES)
+    await msg.edit(content=f"🎰 **結果発表！** {ctx.author.mention}\n{result}")
+
+
 @bot.command()
 async def who(ctx):
     embed = discord.Embed(
