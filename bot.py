@@ -1,5 +1,7 @@
 import os
+import re
 import random
+import aiohttp
 import discord
 from discord.ext import commands
 from dotenv import load_dotenv
@@ -17,10 +19,55 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 RECRUIT_KEYWORDS = ["募集", "募", "ぼ"]
 TARGET_USER_IDS = [512510702129512469, 1133749381250695269]
 
+# ポケモン名キャッシュ
+pokemon_cache = {}   # {"レントラー": 405, ...}
+pokemon_pattern = None  # 検索用コンパイル済み正規表現
+
+STAT_NAMES = {
+    "hp": "HP",
+    "attack": "こうげき",
+    "defense": "ぼうぎょ",
+    "special-attack": "とくこう",
+    "special-defense": "とくぼう",
+    "speed": "すばやさ",
+}
+
+
+async def build_pokemon_cache():
+    """PokeAPI GraphQLで全ポケモンの日本語名→IDキャッシュを構築する"""
+    global pokemon_cache, pokemon_pattern
+    graphql_url = "https://beta.pokeapi.co/graphql/v1beta"
+    query = """{ pokemon_v2_pokemonspeciesname(where: {language_id: {_in: [1, 11]}}) { name pokemon_species_id } }"""
+    async with aiohttp.ClientSession() as session:
+        async with session.post(graphql_url, json={"query": query}) as resp:
+            data = await resp.json()
+    for item in data["data"]["pokemon_v2_pokemonspeciesname"]:
+        pokemon_cache[item["name"]] = item["pokemon_species_id"]
+    names_sorted = sorted(pokemon_cache.keys(), key=len, reverse=True)
+    pokemon_pattern = re.compile("|".join(re.escape(n) for n in names_sorted))
+    print(f"ポケモンキャッシュ構築完了: {len(pokemon_cache)}種")
+
+
+async def get_pokemon_stats(pokemon_id):
+    """ポケモンIDから種族値と日本語名を取得する"""
+    async with aiohttp.ClientSession() as session:
+        async with session.get(f"https://pokeapi.co/api/v2/pokemon/{pokemon_id}/") as resp:
+            data = await resp.json()
+        async with session.get(f"https://pokeapi.co/api/v2/pokemon-species/{pokemon_id}/") as resp:
+            species = await resp.json()
+    ja_name = next(
+        (n["name"] for n in species["names"] if n["language"]["name"] == "ja"),
+        data["name"]
+    )
+    stats = {STAT_NAMES[s["stat"]["name"]]: s["base_stat"]
+             for s in data["stats"] if s["stat"]["name"] in STAT_NAMES}
+    return ja_name, data["id"], stats
+
 
 @bot.event
 async def on_ready():
     print(f"{bot.user} としてログインしました")
+    await build_pokemon_cache()
 
 
 @bot.event
@@ -56,6 +103,25 @@ async def on_message(message):
 
     if "パチンコで負け" in message.content:
         await message.reply("…いや待って聞いて、確かに数字だけ見たらマイナスに見えるかもしれんけど、まず交通費と昼飯代除いたら実質もっと少ないし、そもそもあの日の大当たり映像今でも鮮明に覚えてるし精神的な充実度で言ったら絶対プラスなんよ…それにパチ屋で培った確率論の知識とか台の見極め方とか、そういうスキルって金に換算したらめちゃくちゃ価値あると思うし…あの日あの台さえ引き続けてなければ今頃全然違う結果になってたし、俺の立ち回り自体は間違ってないんよ、ただ台が悪かっただけで…あと出玉で飯食えた日も何回かあったし、そういうの全部トータルで計算したらほぼトントンやと思うし…たぶん…そもそも俺はパチンコに課金してるんじゃなくてエンタメに投資してる感覚やから、映画とかライブとか行くのと本質的には変わらんくて、むしろ安い日とかも普通にあるし…まだ終わってへんし、確率って長期で収束するもんやから今はまだ収束途中なだけで、あと少し続けたら絶対取り返せるし…ボソボソ")
+
+    if pokemon_pattern:
+        match = pokemon_pattern.search(message.content)
+        if match:
+            pokemon_name = match.group()
+            pokemon_id = pokemon_cache[pokemon_name]
+            try:
+                ja_name, dex_id, stats = await get_pokemon_stats(pokemon_id)
+                total = sum(stats.values())
+                embed = discord.Embed(
+                    title=f"📊 {ja_name}（#{dex_id}）の種族値",
+                    color=discord.Color.gold(),
+                )
+                stats_text = "\n".join(f"{k}　{v}" for k, v in stats.items())
+                embed.description = f"```{stats_text}\n─────────\n合計　　{total}```"
+                embed.set_footer(text="出典: PokeAPI")
+                await message.channel.send(embed=embed)
+            except Exception:
+                pass
 
     await bot.process_commands(message)
 
