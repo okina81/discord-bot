@@ -105,13 +105,27 @@ async def ping(ctx):
     latency = round(bot.latency * 1000)
 
     if latency < 100:
-        status = "🟢 快適！サクサクだ！"
+        status = random.choice([
+            "🟢 はや！天才か？",
+            "🟢 回線強者すぎる",
+            "🟢 光回線の申し子",
+            "🟢 はやすぎて草",
+        ])
         color = discord.Color.green()
     elif latency < 200:
-        status = "🟡 まあまあかな"
+        status = random.choice([
+            "🟡 まあ許してやる",
+            "🟡 普通やな",
+            "🟡 可もなく不可もなく",
+        ])
         color = discord.Color.yellow()
     else:
-        status = "🔴 重い…つらい…"
+        status = random.choice([
+            "🔴 回線ゴミすぎｗ",
+            "🔴 Wi-Fiルーターぶん投げろ",
+            "🔴 それ回線？砂時計？",
+            "🔴 光回線解約したん？",
+        ])
         color = discord.Color.red()
 
     embed = discord.Embed(title="🏓 Pong!", color=color)
