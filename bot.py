@@ -1,4 +1,5 @@
 import os
+import random
 import discord
 from discord.ext import commands
 from dotenv import load_dotenv
@@ -13,6 +14,7 @@ intents.members = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 RECRUIT_KEYWORDS = ["募集", "募", "ぼ"]
+TARGET_USER_ID = 512510702129512469
 
 
 @bot.event
@@ -36,6 +38,10 @@ async def on_message(message):
         poll = await message.channel.send(embed=embed)
         await poll.add_reaction("✅")
         await poll.add_reaction("❌")
+
+    if message.author.id == TARGET_USER_ID:
+        if random.random() < 0.1:
+            await message.reply("だぼが")
 
     await bot.process_commands(message)
 
