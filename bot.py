@@ -51,6 +51,9 @@ async def on_message(message):
         if random.random() < 1/3:
             await message.reply("おま、X依存症かよw")
 
+    if "コンジット" in message.content:
+        await message.reply("コンジットはブス")
+
     await bot.process_commands(message)
 
 
