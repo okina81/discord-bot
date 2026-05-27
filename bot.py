@@ -102,7 +102,22 @@ async def hello(ctx):
 
 @bot.command()
 async def ping(ctx):
-    await ctx.send(f"Pong! レイテンシ: {round(bot.latency * 1000)}ms")
+    latency = round(bot.latency * 1000)
+
+    if latency < 100:
+        status = "🟢 快適！サクサクだ！"
+        color = discord.Color.green()
+    elif latency < 200:
+        status = "🟡 まあまあかな"
+        color = discord.Color.yellow()
+    else:
+        status = "🔴 重い…つらい…"
+        color = discord.Color.red()
+
+    embed = discord.Embed(title="🏓 Pong!", color=color)
+    embed.add_field(name="レイテンシ", value=f"{latency}ms", inline=True)
+    embed.add_field(name="状態", value=status, inline=True)
+    await ctx.send(embed=embed)
 
 
 bot.run(TOKEN)
