@@ -158,7 +158,11 @@ async def on_message(message):
         )
         embed.add_field(name="地域", value=region, inline=True)
         embed.add_field(name="場所", value=location, inline=False)
-        await message.channel.send(embed=embed)
+        embed.set_footer(text="地図ボタンから現地確認できます")
+        view = discord.ui.View()
+        map_url = f"https://act.hoyolab.com/ys/app/interactive-map/#/map/2?lang=ja-jp"
+        view.add_item(discord.ui.Button(label="🗺️ HoYoLABマップで見る", url=map_url, style=discord.ButtonStyle.link))
+        await message.channel.send(embed=embed, view=view)
 
     if pokemon_pattern:
         match = pokemon_pattern.search(message.content)
