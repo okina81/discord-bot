@@ -367,7 +367,10 @@ async def roulette(ctx):
     import asyncio
     msg = await ctx.send("🎰 ルーレット回転中...")
     await asyncio.sleep(2)
-    result = random.choice(ROULETTES)
+    if ctx.author.id in TARGET_USER_IDS:
+        result = "🍺 次の集まりで全員分おごり確定！"
+    else:
+        result = random.choice(ROULETTES)
     await msg.edit(content=f"🎰 **結果発表！** {ctx.author.mention}\n{result}")
 
 
