@@ -49,6 +49,51 @@ async def on_message(message):
     await bot.process_commands(message)
 
 
+MAC_MENU = {
+    "🍔 バーガー": [
+        "ビッグマック",
+        "クォーターパウンダーチーズ",
+        "てりやきマックバーガー",
+        "フィレオフィッシュ",
+        "チキンタツタ",
+        "ダブルチーズバーガー",
+    ],
+    "🍟 サイド": [
+        "マックフライポテト（L）",
+        "チキンナゲット（15ピース）",
+        "マックシェイク",
+        "コーン",
+        "サラダ",
+    ],
+    "🥤 ドリンク": [
+        "コカ・コーラ",
+        "マックフィズ オレンジ",
+        "カフェラテ",
+        "マックシェイク チョコレート",
+        "お茶",
+    ],
+    "🍦 デザート": [
+        "マックサンデー チョコレート",
+        "アップルパイ",
+        "ソフトツイストコーン",
+        "マックフルーリー オレオ",
+    ],
+}
+
+
+@bot.command()
+async def mac(ctx):
+    embed = discord.Embed(
+        title="🍟 マックのおすすめメニュー",
+        color=discord.Color.red(),
+    )
+    for category, items in MAC_MENU.items():
+        pick = random.sample(items, min(2, len(items)))
+        embed.add_field(name=category, value="\n".join(f"・{item}" for item in pick), inline=False)
+    embed.set_footer(text="今日のおすすめはこれだ！")
+    await ctx.send(embed=embed)
+
+
 @bot.command()
 async def hello(ctx):
     await ctx.send(f"こんにちは、{ctx.author.name}さん！")
