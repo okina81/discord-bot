@@ -290,6 +290,23 @@ async def usage(ctx):
     await ctx.send(embed=embed)
 
 
+APEX_LEGENDS = [
+    "バンガロール", "ブラッドハウンド", "コースティック", "クリプト",
+    "フューズ", "ジブラルタル", "ホライゾン", "ライフライン",
+    "ローバ", "マッドマギー", "ミラージュ", "ニューキャッスル",
+    "オクタン", "パスファインダー", "ランパート", "レヴナント",
+    "シア", "ヴァルキリー", "ワットソン", "レイス",
+    "アッシュ", "バリスティック", "コンジット", "オルター",
+    "ヴァンテージ", "カタリスト",
+]
+
+
+@bot.command()
+async def apex(ctx):
+    legend = random.choice(APEX_LEGENDS)
+    await ctx.send(f"🎯 今日のレジェンドは **{legend}** だ！")
+
+
 @bot.command()
 async def hello(ctx):
     await ctx.send(f"こんにちは、{ctx.author.name}さん！")
