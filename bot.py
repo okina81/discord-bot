@@ -47,6 +47,9 @@ async def on_message(message):
     if bot.user in message.mentions:
         await message.reply(random.choice(["マギーちゃんのビラビラおまんまん", "うおwww"]))
 
+    if "https://x.com/" in message.content:
+        await message.reply("おま、X依存症かよｗ")
+
     await bot.process_commands(message)
 
 
