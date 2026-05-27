@@ -1,10 +1,9 @@
 import os
 import random
-import aiohttp
 import discord
-from bs4 import BeautifulSoup
 from discord.ext import commands
 from dotenv import load_dotenv
+from playwright.async_api import async_playwright
 
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -51,48 +50,59 @@ async def on_message(message):
     await bot.process_commands(message)
 
 
-MAC_URL = "https://www.mcdonalds.co.jp/menu/"
-HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0 Safari/537.36"}
+MAC_CATEGORIES = {
+    "🍔 バーガー": "https://www.mcdonalds.co.jp/menu/burger/",
+    "🍟 サイドメニュー": "https://www.mcdonalds.co.jp/menu/side/",
+    "🥤 ドリンク": "https://www.mcdonalds.co.jp/menu/drink/",
+    "🍦 スイーツ": "https://www.mcdonalds.co.jp/menu/dessert/",
+}
+MAC_EXCLUDE = ["特殊立地", "アレルギー", "栄養", "ソース", "シロップ", "コーヒーフレッシュ",
+               "シュガー", "リキッドレモン", "バターパット", "焙煎", "シーズニング"]
 
 
 async def fetch_mac_menu():
-    """マクドナルド公式サイトからメニューを取得する"""
-    async with aiohttp.ClientSession() as session:
-        async with session.get(MAC_URL, headers=HEADERS) as resp:
-            html = await resp.text()
-
-    soup = BeautifulSoup(html, "html.parser")
-    items = []
-    for a in soup.find_all("a", href=True):
-        if "/products/" in a["href"]:
-            strong = a.find("strong")
-            if strong and strong.text.strip():
-                name = strong.text.strip()
-                if name not in items:
-                    items.append(name)
-    return items
+    """Playwrightでマクドナルド公式サイトからカテゴリ別メニューを取得する"""
+    result = {}
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        page = await browser.new_page()
+        for cat, url in MAC_CATEGORIES.items():
+            await page.goto(url, wait_until="networkidle")
+            items = await page.eval_on_selector_all(
+                "strong",
+                "els => els.map(el => el.innerText.trim()).filter(t => t.length > 2)"
+            )
+            filtered = [i for i in items if not any(ex in i for ex in MAC_EXCLUDE)]
+            result[cat] = list(dict.fromkeys(filtered))
+        await browser.close()
+    return result
 
 
 @bot.command()
 async def mac(ctx):
-    await ctx.send("🍟 マックのメニューを取得中...")
+    msg = await ctx.send("🍟 マックのメニューを取得中...")
     try:
-        items = await fetch_mac_menu()
-        if not items:
-            await ctx.send("メニューの取得に失敗しました。時間をおいて試してみてください。")
+        menu = await fetch_mac_menu()
+        if not menu:
+            await msg.edit(content="メニューの取得に失敗しました。時間をおいて試してみてください。")
             return
 
-        picks = random.sample(items, min(5, len(items)))
         embed = discord.Embed(
             title="🍟 マックのおすすめメニュー（公式より）",
-            description="\n".join(f"・{item}" for item in picks),
             color=discord.Color.red(),
         )
-        embed.set_footer(text=f"全{len(items)}種類の中からランダム5選！ | mcdonalds.co.jp")
+        total = 0
+        for cat, items in menu.items():
+            if items:
+                picks = random.sample(items, min(2, len(items)))
+                embed.add_field(name=cat, value="\n".join(f"・{i}" for i in picks), inline=False)
+                total += len(items)
+        embed.set_footer(text=f"全{total}種類の中からランダム2選！ | mcdonalds.co.jp")
+        await msg.delete()
         await ctx.send(embed=embed)
 
     except Exception as e:
-        await ctx.send(f"エラーが発生しました: {e}")
+        await msg.edit(content=f"エラーが発生しました: {e}")
 
 
 @bot.command()
