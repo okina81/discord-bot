@@ -256,6 +256,41 @@ async def mac(ctx):
 
 
 @bot.command()
+async def usage(ctx):
+    embed = discord.Embed(
+        title="🤖 Botの使い方",
+        color=discord.Color.blurple(),
+    )
+    embed.add_field(
+        name="🎮 ゲーム募集",
+        value="`募集` `募` `ぼ` を含む発言をすると\n参加者を募る投票を自動で作成",
+        inline=False,
+    )
+    embed.add_field(
+        name="🍟 マックのおすすめ",
+        value="`!mac` で公式サイトから\nカテゴリ別おすすめメニューをランダム表示",
+        inline=False,
+    )
+    embed.add_field(
+        name="🏓 ping確認",
+        value="`!ping` でBotの応答速度を確認\nping値によって煽りや褒めが変わる",
+        inline=False,
+    )
+    embed.add_field(
+        name="📊 ポケモン種族値",
+        value="ポケモンの名前を含む発言をすると\n自動で種族値を表示",
+        inline=False,
+    )
+    embed.add_field(
+        name="🗺️ 原神 特産品の場所",
+        value="原神の特産品名を含む発言をすると\n採取場所とマップへのリンクを表示",
+        inline=False,
+    )
+    embed.set_footer(text="このチャンネル専用Bot")
+    await ctx.send(embed=embed)
+
+
+@bot.command()
 async def hello(ctx):
     await ctx.send(f"こんにちは、{ctx.author.name}さん！")
 
