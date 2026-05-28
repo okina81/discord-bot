@@ -128,6 +128,10 @@ async def on_message(message):
     if message.author.bot:
         return
 
+    if "x.com/" in message.content or "twitter.com/" in message.content:
+        if random.random() < 1/3:
+            await message.reply("おま、X依存症かよw")
+
     if message.channel.id not in ALLOWED_CHANNEL_IDS:
         await bot.process_commands(message)
         return
@@ -151,10 +155,6 @@ async def on_message(message):
 
     if bot.user in message.mentions:
         await message.reply(random.choice(["マギーちゃんのビラビラおまんまん", "うおwww", "う、うおwww", "I love 高木", "いとこは禁句な？", "かわいいだけじゃ、ダメですか？", "いぇーーーーーい！！！"]))
-
-    if "x.com/" in message.content or "twitter.com/" in message.content:
-        if random.random() < 1/3:
-            await message.reply("おま、X依存症かよw")
 
     if "コンジット" in message.content:
         await message.reply("コンジットはブス")
