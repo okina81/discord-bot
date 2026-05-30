@@ -3,6 +3,7 @@ import re
 import random
 import asyncio
 import datetime
+import time
 import aiohttp
 import discord
 from discord.ext import commands
@@ -459,21 +460,27 @@ async def roulette(ctx):
 
 @bot.command()
 async def ping(ctx):
-    msg = await ctx.send("🌐 通信速度を測定中... しばらく待ってね（10〜30秒かかるよ）")
+    msg = await ctx.send("🌐 通信速度を測定中... しばらく待ってね（10〜20秒かかるよ）")
     try:
-        import speedtest as st_module
+        async with aiohttp.ClientSession() as session:
+            # Ping（Cloudflare への往復時間）
+            t0 = time.monotonic()
+            async with session.get("https://speed.cloudflare.com/__down?bytes=0") as r:
+                await r.read()
+            ping_ms = (time.monotonic() - t0) * 1000
 
-        def _run():
-            s = st_module.Speedtest()
-            s.get_best_server()
-            s.download()
-            s.upload()
-            return s.results
+            # ダウンロード（25MB）
+            t0 = time.monotonic()
+            async with session.get("https://speed.cloudflare.com/__down?bytes=25000000") as r:
+                dl_data = await r.read()
+            download = len(dl_data) * 8 / (time.monotonic() - t0) / 1_000_000
 
-        results  = await asyncio.to_thread(_run)
-        download = results.download / 1_000_000
-        upload   = results.upload   / 1_000_000
-        ping     = results.ping
+            # アップロード（10MB）
+            payload = b"x" * 10_000_000
+            t0 = time.monotonic()
+            async with session.post("https://speed.cloudflare.com/__up", data=payload) as r:
+                await r.read()
+            upload = len(payload) * 8 / (time.monotonic() - t0) / 1_000_000
 
         if download >= 500:
             comment = random.choice([
@@ -519,7 +526,7 @@ async def ping(ctx):
         embed = discord.Embed(title="🌐 通信速度テスト結果", color=discord.Color.blue())
         embed.add_field(name="📥 ダウンロード", value=f"{download:.1f} Mbps", inline=True)
         embed.add_field(name="📤 アップロード", value=f"{upload:.1f} Mbps",   inline=True)
-        embed.add_field(name="🏓 Ping",         value=f"{ping:.1f} ms",       inline=True)
+        embed.add_field(name="🏓 Ping",         value=f"{ping_ms:.1f} ms",    inline=True)
         embed.add_field(name="一言",             value=comment,                inline=False)
         embed.set_footer(text="※ Botが動いているマシンの回線速度です")
         await msg.delete()
