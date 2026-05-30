@@ -22,8 +22,8 @@ RECRUIT_KEYWORDS = ["募集", "募", "ぼ"]
 TARGET_USER_IDS = [512510702129512469, 1133749381250695269]
 ALLOWED_CHANNEL_IDS = [1509231531326181406]
 
-# 募集投票のメッセージID → 送信先チャンネルID を管理
-recruit_polls: dict[int, int] = {}
+# 募集投票のメッセージID → {"channel_id": int, "start_at": datetime | None}
+recruit_polls: dict[int, dict] = {}
 
 # 原神 特産品辞書 {特産品名: (地域, 場所)}
 GENSHIN_TOKUSANHIN = {
@@ -160,14 +160,25 @@ async def on_raw_reaction_add(payload):
     if member is None:
         return
 
-    recruit_channel = bot.get_channel(recruit_polls[payload.message_id])
+    poll_data       = recruit_polls[payload.message_id]
+    recruit_channel = bot.get_channel(poll_data["channel_id"])
+    start_at        = poll_data["start_at"]  # datetime | None
 
     # DMで参加予定時刻を確認
-    try:
-        await member.send(
+    if start_at:
+        time_str_base = f"{start_at.hour}時" + (f"{start_at.minute}分" if start_at.minute else "")
+        dm_hint = (
+            f"🕐 **{time_str_base}から**のゲームに何分後に参加できる？\n"
+            f"例: `10m`（{time_str_base}の10分後）　`1h`（1時間後）　`15時30分から`（時刻で直接指定）"
+        )
+    else:
+        dm_hint = (
             "🕐 何分後（何時間後）に参加できる？\n"
             "例: `10m`（10分後）　`1h30m`（1時間30分後）　`15時から`　`15時30分から`"
         )
+
+    try:
+        await member.send(dm_hint)
     except discord.Forbidden:
         await recruit_channel.send(
             f"{member.mention} DMが送れなかったよ。何分後・何時から参加できるか教えて！"
@@ -186,13 +197,22 @@ async def on_raw_reaction_add(payload):
     text = reply.content.strip()
 
     # まず「〇分後」形式で解析
-    seconds = parse_duration(text)
-    if seconds is not None:
-        if seconds > 3 * 3600:
-            await member.send("❌ タイマーは最大3時間までだよ！")
-            return
-        confirm = f"⏱️ わかった！{format_duration(seconds)}後に教えるね。"
-        notify  = f"⏰ {member.mention} {format_duration(seconds)}経ったぞ！そろそろゲーム参加できる？"
+    duration_sec = parse_duration(text)
+    if duration_sec is not None:
+        if start_at:
+            # 開始時刻 + 指定時間 を通知タイミングにする
+            notify_at  = start_at + datetime.timedelta(seconds=duration_sec)
+            seconds    = max(0, int((notify_at - datetime.datetime.now()).total_seconds()))
+            notify_str = f"{notify_at.hour}時" + (f"{notify_at.minute}分" if notify_at.minute else "")
+            confirm    = f"⏱️ わかった！{notify_str}（{time_str_base}の{format_duration(duration_sec)}後）に教えるね。"
+            notify     = f"⏰ {member.mention} {notify_str}になったぞ！そろそろゲーム参加できる？"
+        else:
+            if duration_sec > 3 * 3600:
+                await member.send("❌ タイマーは最大3時間までだよ！")
+                return
+            seconds = duration_sec
+            confirm = f"⏱️ わかった！{format_duration(seconds)}後に教えるね。"
+            notify  = f"⏰ {member.mention} {format_duration(seconds)}経ったぞ！そろそろゲーム参加できる？"
     else:
         # 「〇時から」形式で解析
         result = parse_clock_time(text)
@@ -230,12 +250,13 @@ async def on_message(message):
     if any(kw in message.content for kw in RECRUIT_KEYWORDS):
         time_result = extract_clock_time(message.content)
         if time_result:
-            _, time_str = time_result
+            _, time_str, start_at = time_result
             description = (
                 f"**{message.author.display_name}** さんが "
                 f"**{time_str}から** 一緒にゲームをする人を募集しています！"
             )
         else:
+            start_at    = None
             description = f"**{message.author.display_name}** さんが一緒にゲームをする人を募集しています！"
 
         embed = discord.Embed(
@@ -250,10 +271,10 @@ async def on_message(message):
         await poll.add_reaction("✅")
         await poll.add_reaction("🕐")
         await poll.add_reaction("❌")
-        recruit_polls[poll.id] = recruit_channel.id
+        recruit_polls[poll.id] = {"channel_id": recruit_channel.id, "start_at": start_at}
 
         if time_result:
-            seconds_until, time_str = time_result
+            seconds_until, time_str, _ = time_result
             asyncio.create_task(
                 notify_game_start(poll.id, recruit_channel.id, seconds_until, time_str)
             )
@@ -561,8 +582,8 @@ def parse_clock_time(text):
 
 
 def extract_clock_time(text):
-    """メッセージ全体から '〇時' '〇時〇分から' パターンを探して (秒数, 表示文字列) を返す。
-    見つからない場合は None を返す。"""
+    """メッセージ全体から '〇時' '〇時〇分から' パターンを探して
+    (秒数, 表示文字列, target_datetime) を返す。見つからない場合は None を返す。"""
     m = re.search(r'(\d{1,2})時(?:(\d{1,2})分)?(?:から)?', text)
     if not m:
         return None
@@ -576,7 +597,7 @@ def extract_clock_time(text):
         target += datetime.timedelta(days=1)
     seconds  = int((target - now).total_seconds())
     time_str = f"{hour}時" + (f"{minute}分" if minute else "")
-    return seconds, time_str
+    return seconds, time_str, target
 
 
 @bot.command()
