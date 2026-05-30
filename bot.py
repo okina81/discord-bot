@@ -336,8 +336,8 @@ async def usage(ctx):
         inline=False,
     )
     embed.add_field(
-        name="🏓 ping確認",
-        value="`!ping` でBotの応答速度を確認\nping値によって煽りや褒めが変わる",
+        name="🌐 通信速度テスト",
+        value="`!ping` でダウンロード・アップロード速度と Ping を測定\n※ Botが動いているマシンの回線速度",
         inline=False,
     )
     embed.add_field(
@@ -363,11 +363,6 @@ async def usage(ctx):
     embed.add_field(
         name="🎰 罰ゲームルーレット",
         value="`!roulette` でランダムに罰ゲームを決定\n※特定ユーザーは必ずおごり確定",
-        inline=False,
-    )
-    embed.add_field(
-        name="🌐 通信速度テスト",
-        value="`!speedtest` でダウンロード・アップロード速度とPingを測定\n※ Botが動いているマシンの回線速度",
         inline=False,
     )
     embed.add_field(
@@ -463,7 +458,7 @@ async def roulette(ctx):
 
 
 @bot.command()
-async def speedtest(ctx):
+async def ping(ctx):
     msg = await ctx.send("🌐 通信速度を測定中... しばらく待ってね（10〜30秒かかるよ）")
     try:
         import speedtest as st_module
@@ -606,40 +601,6 @@ async def who(ctx):
 @bot.command()
 async def hello(ctx):
     await ctx.send(f"こんにちは、{ctx.author.name}さん！")
-
-
-@bot.command()
-async def ping(ctx):
-    latency = round(bot.latency * 1000)
-
-    if latency < 100:
-        status = random.choice([
-            "🟢 はや！天才か？",
-            "🟢 回線強者すぎる",
-            "🟢 光回線の申し子",
-            "🟢 はやすぎて草",
-        ])
-        color = discord.Color.green()
-    elif latency < 200:
-        status = random.choice([
-            "🟡 まあ許してやる",
-            "🟡 普通やな",
-            "🟡 可もなく不可もなく",
-        ])
-        color = discord.Color.yellow()
-    else:
-        status = random.choice([
-            "🔴 回線ゴミすぎｗ",
-            "🔴 Wi-Fiルーターぶん投げろ",
-            "🔴 それ回線？砂時計？",
-            "🔴 光回線解約したん？",
-        ])
-        color = discord.Color.red()
-
-    embed = discord.Embed(title="🏓 Pong!", color=color)
-    embed.add_field(name="レイテンシ", value=f"{latency}ms", inline=True)
-    embed.add_field(name="状態", value=status, inline=True)
-    await ctx.send(embed=embed)
 
 
 bot.run(TOKEN)
