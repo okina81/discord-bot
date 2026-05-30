@@ -475,7 +475,15 @@ async def ping(ctx):
         upload   = results.upload   / 1_000_000
         ping     = results.ping
 
-        if download >= 100:
+        if download >= 500:
+            comment = random.choice([
+                "⚡ 化け物回線すぎて草",
+                "⚡ 何に使うんその速度",
+                "⚡ お前のうち通信会社か？",
+                "⚡ 1GB一瞬で落とせるやんけ",
+                "⚡ もはや回線じゃなくて光そのもの",
+            ])
+        elif download >= 100:
             comment = random.choice([
                 "🚀 はや！光回線の申し子か",
                 "🚀 こんな速度出る？天才か",
