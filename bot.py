@@ -339,7 +339,7 @@ async def usage(ctx):
     )
     embed.add_field(
         name="🎮 ゲーム募集",
-        value="`募集` `募` `ぼ` を含む発言をすると\n参加者を募る投票を自動で作成",
+        value="`募集` `募` `ぼ` を含む発言をすると参加者を募る投票を自動で作成\n✅ 参加する　🕐 後から参加（時間をDMで聞いて自動タイマー）　❌ 参加できない",
         inline=False,
     )
     embed.add_field(
@@ -364,7 +364,7 @@ async def usage(ctx):
     )
     embed.add_field(
         name="⏱️ タイマー",
-        value="`!timer 10m` `!timer 1h30m` `!timer 30s` など\n時間になったらメンションで呼び出す",
+        value="`!timer 10m` `!timer 1h30m` `!timer 30s`\n`!timer 15時から` `!timer 15時30分から` など\n時間になったらメンションで呼び出す",
         inline=False,
     )
     embed.add_field(
