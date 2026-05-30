@@ -2,6 +2,7 @@ import os
 import re
 import random
 import asyncio
+import datetime
 import aiohttp
 import discord
 from discord.ext import commands
@@ -143,15 +144,15 @@ async def on_raw_reaction_add(payload):
 
     recruit_channel = bot.get_channel(recruit_polls[payload.message_id])
 
-    # DMで何分後か確認
+    # DMで参加予定時刻を確認
     try:
         await member.send(
             "🕐 何分後（何時間後）に参加できる？\n"
-            "例: `10m`（10分後）　`1h30m`（1時間30分後）　`30s`（30秒後）"
+            "例: `10m`（10分後）　`1h30m`（1時間30分後）　`15時から`　`15時30分から`"
         )
     except discord.Forbidden:
         await recruit_channel.send(
-            f"{member.mention} DMが送れなかったよ。何分後に参加できるか教えて！"
+            f"{member.mention} DMが送れなかったよ。何分後・何時から参加できるか教えて！"
         )
         return
 
@@ -164,22 +165,35 @@ async def on_raw_reaction_add(payload):
         await member.send("⌛ タイムアウトしたよ。もう一度 🕐 を押してね。")
         return
 
-    seconds = parse_duration(reply.content.strip())
-    if seconds is None:
-        await member.send("❌ 形式が合ってないよ！例: `10m` `1h30m` `30s`")
-        return
-    if seconds > 3 * 3600:
-        await member.send("❌ タイマーは最大3時間までだよ！")
-        return
+    text = reply.content.strip()
 
-    label = format_duration(seconds)
-    await member.send(f"⏱️ わかった！{label}後に教えるね。")
+    # まず「〇分後」形式で解析
+    seconds = parse_duration(text)
+    if seconds is not None:
+        if seconds > 3 * 3600:
+            await member.send("❌ タイマーは最大3時間までだよ！")
+            return
+        confirm = f"⏱️ わかった！{format_duration(seconds)}後に教えるね。"
+        notify  = f"⏰ {member.mention} {format_duration(seconds)}経ったぞ！そろそろゲーム参加できる？"
+    else:
+        # 「〇時から」形式で解析
+        result = parse_clock_time(text)
+        if result is None:
+            await member.send(
+                "❌ 形式が合ってないよ！\n"
+                "例: `10m` `1h30m` `15時から` `15時30分から`"
+            )
+            return
+        seconds, time_str = result
+        if seconds > 12 * 3600:
+            await member.send("❌ 12時間以上先の時刻は指定できないよ！")
+            return
+        confirm = f"⏱️ わかった！{time_str}になったら教えるね。"
+        notify  = f"⏰ {member.mention} {time_str}になったぞ！そろそろゲーム参加できる？"
 
+    await member.send(confirm)
     await asyncio.sleep(seconds)
-
-    await recruit_channel.send(
-        f"⏰ {member.mention} {label}経ったぞ！そろそろゲーム参加できる？"
-    )
+    await recruit_channel.send(notify)
 
 
 @bot.event
@@ -481,6 +495,35 @@ def format_duration(seconds):
     if m: parts.append(f"{m}分")
     if s: parts.append(f"{s}秒")
     return "".join(parts)
+
+
+def parse_clock_time(text):
+    """'15時' '15時30分' '15時から' '15:30' などを受け取り、(秒数, 表示文字列) を返す。
+    解析できない場合は None を返す。"""
+    text = text.strip()
+    # 〇時 / 〇時〇分 / 〇時から / 〇時〇分から
+    m = re.fullmatch(r'(\d{1,2})時(?:(\d{1,2})分)?(?:から)?', text)
+    if not m:
+        # HH:MM または HH:MM から
+        m2 = re.fullmatch(r'(\d{1,2}):(\d{2})(?:から)?', text)
+        if not m2:
+            return None
+        hour, minute = int(m2.group(1)), int(m2.group(2))
+    else:
+        hour   = int(m.group(1))
+        minute = int(m.group(2) or 0)
+
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        return None
+
+    now    = datetime.datetime.now()
+    target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if target <= now:
+        target += datetime.timedelta(days=1)
+
+    seconds  = int((target - now).total_seconds())
+    time_str = f"{hour}時" + (f"{minute}分" if minute else "")
+    return seconds, time_str
 
 
 @bot.command()
