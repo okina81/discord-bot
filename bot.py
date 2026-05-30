@@ -366,6 +366,11 @@ async def usage(ctx):
         inline=False,
     )
     embed.add_field(
+        name="🌐 通信速度テスト",
+        value="`!speedtest` でダウンロード・アップロード速度とPingを測定\n※ Botが動いているマシンの回線速度",
+        inline=False,
+    )
+    embed.add_field(
         name="🤖 Bot自己紹介",
         value="`!who` でBotのプロフィールを表示",
         inline=False,
@@ -455,6 +460,45 @@ async def roulette(ctx):
     else:
         result = random.choice(ROULETTES)
     await msg.edit(content=f"🎰 **結果発表！** {ctx.author.mention}\n{result}")
+
+
+@bot.command()
+async def speedtest(ctx):
+    msg = await ctx.send("🌐 通信速度を測定中... しばらく待ってね（10〜30秒かかるよ）")
+    try:
+        import speedtest as st_module
+
+        def _run():
+            s = st_module.Speedtest()
+            s.get_best_server()
+            s.download()
+            s.upload()
+            return s.results
+
+        results  = await asyncio.to_thread(_run)
+        download = results.download / 1_000_000
+        upload   = results.upload   / 1_000_000
+        ping     = results.ping
+
+        if download >= 100:
+            comment = "🚀 はや！光回線の申し子か"
+        elif download >= 30:
+            comment = "🟢 普通に快適やん"
+        elif download >= 10:
+            comment = "🟡 まあギリ許せる速度"
+        else:
+            comment = "🔴 回線ゴミすぎｗ Wi-Fi近づけろ"
+
+        embed = discord.Embed(title="🌐 通信速度テスト結果", color=discord.Color.blue())
+        embed.add_field(name="📥 ダウンロード", value=f"{download:.1f} Mbps", inline=True)
+        embed.add_field(name="📤 アップロード", value=f"{upload:.1f} Mbps",   inline=True)
+        embed.add_field(name="🏓 Ping",         value=f"{ping:.1f} ms",       inline=True)
+        embed.add_field(name="一言",             value=comment,                inline=False)
+        embed.set_footer(text="※ Botが動いているマシンの回線速度です")
+        await msg.delete()
+        await ctx.send(embed=embed)
+    except Exception as e:
+        await msg.edit(content=f"❌ 測定に失敗しました: {e}")
 
 
 def parse_duration(text):
