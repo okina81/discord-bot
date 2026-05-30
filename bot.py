@@ -1,6 +1,7 @@
 import os
 import re
 import random
+import asyncio
 import aiohttp
 import discord
 from discord.ext import commands
@@ -288,6 +289,11 @@ async def usage(ctx):
         inline=False,
     )
     embed.add_field(
+        name="⏱️ タイマー",
+        value="`!timer 10m` `!timer 1h30m` `!timer 30s` など\n時間になったらメンションで呼び出す",
+        inline=False,
+    )
+    embed.add_field(
         name="🎯 Apexレジェンド",
         value="`!apex` でランダムにレジェンドを1人選出\nディスりキャッチコピー付き",
         inline=False,
@@ -385,7 +391,6 @@ async def roast(ctx, member: discord.Member):
 
 @bot.command()
 async def roulette(ctx):
-    import asyncio
     msg = await ctx.send("🎰 ルーレット回転中...")
     await asyncio.sleep(2)
     if ctx.author.id in TARGET_USER_IDS:
@@ -393,6 +398,45 @@ async def roulette(ctx):
     else:
         result = random.choice(ROULETTES)
     await msg.edit(content=f"🎰 **結果発表！** {ctx.author.mention}\n{result}")
+
+
+def parse_duration(text):
+    """'1h30m20s' などの文字列を秒数に変換する"""
+    match = re.fullmatch(r'(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?', text.strip())
+    if not match or not any(match.groups()):
+        return None
+    hours   = int(match.group(1) or 0)
+    minutes = int(match.group(2) or 0)
+    seconds = int(match.group(3) or 0)
+    total   = hours * 3600 + minutes * 60 + seconds
+    return total if total > 0 else None
+
+
+def format_duration(seconds):
+    """秒数を '1時間30分20秒' 形式の文字列に変換する"""
+    h, rem = divmod(seconds, 3600)
+    m, s   = divmod(rem, 60)
+    parts  = []
+    if h: parts.append(f"{h}時間")
+    if m: parts.append(f"{m}分")
+    if s: parts.append(f"{s}秒")
+    return "".join(parts)
+
+
+@bot.command()
+async def timer(ctx, duration: str):
+    seconds = parse_duration(duration)
+    if seconds is None:
+        await ctx.send("⏱️ 時間の形式が違うよ！例: `!timer 10m` `!timer 1h30m` `!timer 30s`")
+        return
+    if seconds > 3 * 3600:
+        await ctx.send("⏱️ タイマーは最大3時間までだよ！")
+        return
+
+    label = format_duration(seconds)
+    await ctx.send(f"⏱️ {label}後に {ctx.author.mention} を呼び出すよ！")
+    await asyncio.sleep(seconds)
+    await ctx.send(f"⏰ {ctx.author.mention} タイムアップ！{label}経ったぞ、そろそろゲームやろ！")
 
 
 @bot.command()
