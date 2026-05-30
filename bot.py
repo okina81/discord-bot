@@ -476,13 +476,37 @@ async def ping(ctx):
         ping     = results.ping
 
         if download >= 100:
-            comment = "🚀 はや！光回線の申し子か"
+            comment = random.choice([
+                "🚀 はや！光回線の申し子か",
+                "🚀 こんな速度出る？天才か",
+                "🚀 ギガ死ぬやろｗ",
+                "🚀 どんな回線やねん",
+                "🚀 Botもびびってる",
+            ])
         elif download >= 30:
-            comment = "🟢 普通に快適やん"
+            comment = random.choice([
+                "🟢 普通に快適やん",
+                "🟢 まあ文句なし",
+                "🟢 ゲームも動画も余裕やな",
+                "🟢 悪くないやん",
+                "🟢 これで不満なら欲張りすぎ",
+            ])
         elif download >= 10:
-            comment = "🟡 まあギリ許せる速度"
+            comment = random.choice([
+                "🟡 まあギリ許せる速度",
+                "🟡 ラグったらルーター叩け",
+                "🟡 動画たまに止まりそう",
+                "🟡 ゲームはちょっと不安やな",
+                "🟡 Wi-Fi近づけたら？",
+            ])
         else:
-            comment = "🔴 回線ゴミすぎｗ Wi-Fi近づけろ"
+            comment = random.choice([
+                "🔴 回線ゴミすぎｗ Wi-Fi近づけろ",
+                "🔴 それ回線？砂時計？",
+                "🔴 ダイヤルアップかよ",
+                "🔴 光回線解約したん？",
+                "🔴 ポケットWi-Fiの電波1本やろこれ",
+            ])
 
         embed = discord.Embed(title="🌐 通信速度テスト結果", color=discord.Color.blue())
         embed.add_field(name="📥 ダウンロード", value=f"{download:.1f} Mbps", inline=True)
