@@ -326,53 +326,115 @@ async def fetch_mac_menu():
     return result
 
 
-@bot.command()
-async def mac(ctx):
-    msg = await ctx.send("🍟 マックのメニューを取得中...")
-    try:
-        menu = await fetch_mac_menu()
-        if not menu:
-            await msg.edit(content="メニューの取得に失敗しました。時間をおいて試してみてください。")
-            return
+# ─── パネル用ヘルパー ────────────────────────────────────────────
 
-        embed = discord.Embed(
-            title="🍟 マックのおすすめメニュー（公式より）",
-            color=discord.Color.red(),
-        )
-        total = 0
-        for cat, items in menu.items():
-            if items:
-                picks = random.sample(items, min(2, len(items)))
-                embed.add_field(name=cat, value="\n".join(f"・{i}" for i in picks), inline=False)
-                total += len(items)
-        embed.set_footer(text=f"全{total}種類の中からランダム2選！ | mcdonalds.co.jp")
-        await msg.delete()
-        await ctx.send(embed=embed)
-
-    except Exception as e:
-        await msg.edit(content=f"エラーが発生しました: {e}")
+async def build_mac_embed():
+    menu = await fetch_mac_menu()
+    if not menu:
+        return None
+    embed = discord.Embed(title="🍟 マックのおすすめメニュー（公式より）", color=discord.Color.red())
+    total = 0
+    for cat, items in menu.items():
+        if items:
+            picks = random.sample(items, min(2, len(items)))
+            embed.add_field(name=cat, value="\n".join(f"・{i}" for i in picks), inline=False)
+            total += len(items)
+    embed.set_footer(text=f"全{total}種類の中からランダム2選！ | mcdonalds.co.jp")
+    return embed
 
 
+async def build_rankmap_embed():
+    url = f"https://api.mozambiquehe.re/maprotation?auth={APEX_API_KEY}&version=2"
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url) as resp:
+            data = await resp.json()
+    ranked  = data.get("ranked", {})
+    current = ranked.get("current", {})
+    nxt     = ranked.get("next", {})
+    cur_map = APEX_MAP_JA.get(current.get("map", "不明"), current.get("map", "不明"))
+    nxt_map = APEX_MAP_JA.get(nxt.get("map", "不明"), nxt.get("map", "不明"))
+    rem_sec = current.get("remainingSecs", 0)
+    rem_h, rem_m = divmod(rem_sec // 60, 60)
+    remain_str = f"{rem_h}時間{rem_m}分" if rem_h else f"{rem_m}分"
+    embed = discord.Embed(title="🗺️ Apex ランクマッチ 現在のマップ", color=discord.Color.dark_red())
+    embed.add_field(name="🔴 現在",      value=f"**{cur_map}**", inline=True)
+    embed.add_field(name="⏱️ 残り時間", value=remain_str,        inline=True)
+    embed.add_field(name="⏭️ 次",       value=nxt_map,           inline=True)
+    embed.set_footer(text="出典: Apex Legends Status API")
+    return embed
 
-@bot.command()
-async def stats(ctx):
-    embed = discord.Embed(title="📊 サーバー統計", color=discord.Color.purple())
-    medals = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"]
 
-    # 発言数ランキング
+async def build_apexstatus_embed():
+    url = f"https://api.mozambiquehe.re/servers?auth={APEX_API_KEY}"
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url) as resp:
+            data = await resp.json()
+    embed = discord.Embed(title="🖥️ Apex Legends サーバー状態", color=discord.Color.dark_red())
+    for service, regions in data.items():
+        if not isinstance(regions, dict):
+            continue
+        lines = [
+            f"{'🟢' if v.get('Status') == 'UP' else '🔴'} {k}　{v.get('ResponseTime', '?')}ms"
+            for k, v in regions.items() if isinstance(v, dict)
+        ]
+        all_up = all(v.get("Status") == "UP" for v in regions.values() if isinstance(v, dict))
+        any_up = any(v.get("Status") == "UP" for v in regions.values() if isinstance(v, dict))
+        icon   = "🟢" if all_up else ("🟡" if any_up else "🔴")
+        embed.add_field(name=f"{icon} {service}", value="\n".join(lines) or "データなし", inline=False)
+    embed.set_footer(text="出典: Apex Legends Status API")
+    return embed
+
+
+async def build_apexstats_embed(username: str, platform: str = "PC"):
+    platform = PLATFORM_ALIAS.get(platform.lower(), "PC")
+    url = f"https://api.mozambiquehe.re/bridge?auth={APEX_API_KEY}&player={username}&platform={platform}"
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url) as resp:
+            data = await resp.json()
+    if "Error" in data:
+        return None
+    g        = data.get("global", {})
+    rank     = g.get("rank", {})
+    realtime = data.get("realtime", {})
+    rank_name  = rank.get("rankName", "不明")
+    rank_div   = rank.get("rankDiv", 0)
+    rank_rp    = rank.get("rankScore", 0)
+    rank_emoji = RANK_EMOJI.get(rank_name, "🎮")
+    div_label  = ["IV", "III", "II", "I"][rank_div - 1] if 1 <= rank_div <= 4 else ""
+    rank_str   = f"{rank_name} {div_label}".strip() if div_label else rank_name
+    level      = g.get("level", "?")
+    level_pct  = g.get("toNextLevelPercent", 0)
+    if realtime.get("isInGame"):
+        state = "🟢 ゲーム中"
+    elif realtime.get("isOnline"):
+        state = "🟡 オンライン"
+    else:
+        state = "⚫ オフライン"
+    legend = realtime.get("selectedLegend", "")
+    embed  = discord.Embed(title=f"🎮 {g.get('name', username)} の統計", color=discord.Color.dark_red())
+    embed.add_field(name="📊 レベル",           value=f"Lv.{level}（{level_pct}%）", inline=True)
+    embed.add_field(name=f"{rank_emoji} ランク", value=f"{rank_str}\n{rank_rp:,} RP",  inline=True)
+    embed.add_field(name="🔵 状態",              value=state,                           inline=True)
+    if legend:
+        embed.add_field(name="🦸 選択レジェンド", value=legend, inline=True)
+    embed.set_footer(text=f"Platform: {platform} | 出典: Apex Legends Status API")
+    return embed
+
+
+def build_stats_embed(guild: discord.Guild):
+    embed   = discord.Embed(title="📊 サーバー統計", color=discord.Color.purple())
+    medals  = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"]
     messages = server_stats.get("messages", {})
     if messages:
         top_users = sorted(messages.items(), key=lambda x: x[1], reverse=True)[:5]
-        ranking = ""
+        ranking   = ""
         for i, (uid, count) in enumerate(top_users):
-            member = ctx.guild.get_member(int(uid))
-            name   = member.display_name if member else f"退出済みユーザー"
+            member  = guild.get_member(int(uid))
+            name    = member.display_name if member else "退出済みユーザー"
             ranking += f"{medals[i]} {name}　**{count}**回\n"
         embed.add_field(name="💬 発言数ランキング", value=ranking, inline=False)
     else:
         embed.add_field(name="💬 発言数ランキング", value="まだデータなし", inline=False)
-
-    # 絵文字ランキング
     emojis = server_stats.get("emojis", {})
     if emojis:
         top_emojis = sorted(emojis.items(), key=lambda x: x[1], reverse=True)[:5]
@@ -380,10 +442,154 @@ async def stats(ctx):
         embed.add_field(name="🎭 よく使う絵文字 TOP5", value=emoji_text, inline=False)
     else:
         embed.add_field(name="🎭 よく使う絵文字 TOP5", value="まだデータなし", inline=False)
+    embed.set_footer(text=f"総発言数: {sum(messages.values())}回 ｜ Bot起動後からの集計")
+    return embed
 
-    total = sum(messages.values())
-    embed.set_footer(text=f"総発言数: {total}回 ｜ Bot起動後からの集計")
-    await ctx.send(embed=embed)
+
+async def build_ping_embed():
+    async with aiohttp.ClientSession() as session:
+        t0 = time.monotonic()
+        async with session.get("https://speed.cloudflare.com/__down?bytes=0") as r:
+            await r.read()
+        ping_ms = (time.monotonic() - t0) * 1000
+        t0 = time.monotonic()
+        async with session.get("https://speed.cloudflare.com/__down?bytes=25000000") as r:
+            dl_data = await r.read()
+        download = len(dl_data) * 8 / (time.monotonic() - t0) / 1_000_000
+        payload  = b"x" * 10_000_000
+        t0 = time.monotonic()
+        async with session.post("https://speed.cloudflare.com/__up", data=payload) as r:
+            await r.read()
+        upload = len(payload) * 8 / (time.monotonic() - t0) / 1_000_000
+    if download >= 500:
+        comment = random.choice(["⚡ 化け物回線すぎて草","⚡ 何に使うんその速度","⚡ お前のうち通信会社か？","⚡ 1GB一瞬で落とせるやんけ","⚡ もはや回線じゃなくて光そのもの"])
+    elif download >= 100:
+        comment = random.choice(["🚀 はや！光回線の申し子か","🚀 こんな速度出る？天才か","🚀 ギガ死ぬやろｗ","🚀 どんな回線やねん","🚀 Botもびびってる"])
+    elif download >= 30:
+        comment = random.choice(["🟢 普通に快適やん","🟢 まあ文句なし","🟢 ゲームも動画も余裕やな","🟢 悪くないやん","🟢 これで不満なら欲張りすぎ"])
+    elif download >= 10:
+        comment = random.choice(["🟡 まあギリ許せる速度","🟡 ラグったらルーター叩け","🟡 動画たまに止まりそう","🟡 ゲームはちょっと不安やな","🟡 Wi-Fi近づけたら？"])
+    else:
+        comment = random.choice(["🔴 回線ゴミすぎｗ Wi-Fi近づけろ","🔴 それ回線？砂時計？","🔴 ダイヤルアップかよ","🔴 光回線解約したん？","🔴 ポケットWi-Fiの電波1本やろこれ"])
+    embed = discord.Embed(title="🌐 通信速度テスト結果", color=discord.Color.blue())
+    embed.add_field(name="📥 ダウンロード", value=f"{download:.1f} Mbps", inline=True)
+    embed.add_field(name="📤 アップロード", value=f"{upload:.1f} Mbps",   inline=True)
+    embed.add_field(name="🏓 Ping",         value=f"{ping_ms:.1f} ms",    inline=True)
+    embed.add_field(name="一言",             value=comment,                inline=False)
+    embed.set_footer(text="※ Botが動いているマシンの回線速度です")
+    return embed
+
+
+# ─── パネル UI ───────────────────────────────────────────────────
+
+class ApexStatsModal(discord.ui.Modal, title="👤 Apex プレイヤー統計"):
+    username = discord.ui.TextInput(label="EA名", placeholder="プレイヤー名を入力", required=True)
+    platform = discord.ui.TextInput(label="プラットフォーム（PC / PS4 / X1）", default="PC", required=False)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(thinking=True)
+        plat  = self.platform.value.strip() or "PC"
+        embed = await build_apexstats_embed(self.username.value.strip(), plat)
+        if embed is None:
+            await interaction.followup.send("❌ プレイヤーが見つからなかったよ（EA名とプラットフォームを確認してね）")
+        else:
+            await interaction.followup.send(embed=embed)
+
+
+class PanelView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=600)
+
+    # ── Row 0: Apex系 ──────────────────────────────────────
+    @discord.ui.button(label="🗺️ ランクマップ", style=discord.ButtonStyle.primary, row=0)
+    async def btn_rankmap(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(thinking=True)
+        try:
+            await interaction.followup.send(embed=await build_rankmap_embed())
+        except Exception as e:
+            await interaction.followup.send(f"❌ 取得失敗: {e}")
+
+    @discord.ui.button(label="🖥️ サーバー状態", style=discord.ButtonStyle.primary, row=0)
+    async def btn_apexstatus(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(thinking=True)
+        try:
+            await interaction.followup.send(embed=await build_apexstatus_embed())
+        except Exception as e:
+            await interaction.followup.send(f"❌ 取得失敗: {e}")
+
+    @discord.ui.button(label="🎯 レジェンド", style=discord.ButtonStyle.secondary, row=0)
+    async def btn_apex(self, interaction: discord.Interaction, button: discord.ui.Button):
+        legend, catchphrase = random.choice(list(APEX_LEGENDS.items()))
+        await interaction.response.send_message(f"🎯 今日のレジェンドは **{legend}** だ！\n> {catchphrase}")
+
+    @discord.ui.button(label="👤 Apex統計", style=discord.ButtonStyle.primary, row=0)
+    async def btn_apexstats(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(ApexStatsModal())
+
+    # ── Row 1: 遊び系 ──────────────────────────────────────
+    @discord.ui.button(label="🎰 ルーレット", style=discord.ButtonStyle.danger, row=1)
+    async def btn_roulette(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(thinking=True)
+        await asyncio.sleep(2)
+        result = "🍺 次の集まりで全員分おごり確定！" if interaction.user.id in TARGET_USER_IDS else random.choice(ROULETTES)
+        await interaction.followup.send(f"🎰 **結果発表！** {interaction.user.mention}\n{result}")
+
+    @discord.ui.button(label="🍟 マック", style=discord.ButtonStyle.success, row=1)
+    async def btn_mac(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(thinking=True)
+        try:
+            embed = await build_mac_embed()
+            if embed:
+                await interaction.followup.send(embed=embed)
+            else:
+                await interaction.followup.send("❌ メニューの取得に失敗したよ")
+        except Exception as e:
+            await interaction.followup.send(f"❌ エラー: {e}")
+
+    # ── Row 2: 情報系 ──────────────────────────────────────
+    @discord.ui.button(label="📊 サーバー統計", style=discord.ButtonStyle.secondary, row=2)
+    async def btn_stats(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message(embed=build_stats_embed(interaction.guild))
+
+    @discord.ui.button(label="🌐 回線速度", style=discord.ButtonStyle.secondary, row=2)
+    async def btn_ping(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(thinking=True)
+        try:
+            await interaction.followup.send(embed=await build_ping_embed())
+        except Exception as e:
+            await interaction.followup.send(f"❌ 測定失敗: {e}")
+
+
+@bot.command()
+async def panel(ctx):
+    embed = discord.Embed(
+        title="🎮 Bot コントロールパネル",
+        description="ボタンを押して機能を使ってね！\n（パネルは10分間有効）",
+        color=discord.Color.blurple(),
+    )
+    await ctx.send(embed=embed, view=PanelView())
+
+
+# ─────────────────────────────────────────────────────────────────
+
+@bot.command()
+async def mac(ctx):
+    msg = await ctx.send("🍟 マックのメニューを取得中...")
+    try:
+        embed = await build_mac_embed()
+        if embed:
+            await msg.delete()
+            await ctx.send(embed=embed)
+        else:
+            await msg.edit(content="メニューの取得に失敗しました。時間をおいて試してみてください。")
+    except Exception as e:
+        await msg.edit(content=f"エラーが発生しました: {e}")
+
+
+
+@bot.command()
+async def stats(ctx):
+    await ctx.send(embed=build_stats_embed(ctx.guild))
 
 
 @bot.command()
@@ -455,6 +661,11 @@ async def usage(ctx):
     embed.add_field(
         name="🤖 Bot自己紹介",
         value="`!who` でBotのプロフィールを表示",
+        inline=False,
+    )
+    embed.add_field(
+        name="🎮 コントロールパネル",
+        value="`!panel` でボタン式メニューを表示\nランクマップ・サーバー状態・ルーレットなどをワンタップで操作",
         inline=False,
     )
     embed.set_footer(text="このチャンネル専用Bot")
