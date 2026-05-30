@@ -1,9 +1,11 @@
 import os
 import re
+import json
 import random
 import asyncio
 import datetime
 import time
+from pathlib import Path
 import aiohttp
 import discord
 from discord.ext import commands
@@ -25,6 +27,26 @@ ALLOWED_CHANNEL_IDS = [1509231531326181406]
 
 # 募集投票のメッセージID → {"channel_id": int, "start_at": datetime | None}
 recruit_polls: dict[int, dict] = {}
+
+# サーバー統計
+STATS_FILE = Path("stats.json")
+
+def load_stats() -> dict:
+    if STATS_FILE.exists():
+        with open(STATS_FILE, encoding="utf-8") as f:
+            return json.load(f)
+    return {"messages": {}, "emojis": {}}
+
+def save_stats() -> None:
+    with open(STATS_FILE, "w", encoding="utf-8") as f:
+        json.dump(server_stats, f, ensure_ascii=False, indent=2)
+
+server_stats = load_stats()
+
+UNICODE_EMOJI_RE = re.compile(
+    r"[\U0001F300-\U0001FAFF]|[\U00002600-\U000027BF]|[\U0001F000-\U0001F02F]"
+)
+CUSTOM_EMOJI_RE  = re.compile(r"<a?:(\w+):\d+>")
 
 
 # ポケモン名キャッシュ
@@ -189,6 +211,17 @@ async def on_message(message):
     if message.author.bot:
         return
 
+    # 統計集計（サーバー内のみ）
+    if message.guild:
+        uid = str(message.author.id)
+        server_stats["messages"][uid] = server_stats["messages"].get(uid, 0) + 1
+        for emoji in UNICODE_EMOJI_RE.findall(message.content):
+            server_stats["emojis"][emoji] = server_stats["emojis"].get(emoji, 0) + 1
+        for name in CUSTOM_EMOJI_RE.findall(message.content):
+            key = f":{name}:"
+            server_stats["emojis"][key] = server_stats["emojis"].get(key, 0) + 1
+        save_stats()
+
     if "x.com/" in message.content or "twitter.com/" in message.content:
         if random.random() < 1/3:
             await message.reply("おま、X依存症かよw")
@@ -321,6 +354,38 @@ async def mac(ctx):
 
 
 @bot.command()
+async def stats(ctx):
+    embed = discord.Embed(title="📊 サーバー統計", color=discord.Color.purple())
+    medals = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"]
+
+    # 発言数ランキング
+    messages = server_stats.get("messages", {})
+    if messages:
+        top_users = sorted(messages.items(), key=lambda x: x[1], reverse=True)[:5]
+        ranking = ""
+        for i, (uid, count) in enumerate(top_users):
+            member = ctx.guild.get_member(int(uid))
+            name   = member.display_name if member else f"退出済みユーザー"
+            ranking += f"{medals[i]} {name}　**{count}**回\n"
+        embed.add_field(name="💬 発言数ランキング", value=ranking, inline=False)
+    else:
+        embed.add_field(name="💬 発言数ランキング", value="まだデータなし", inline=False)
+
+    # 絵文字ランキング
+    emojis = server_stats.get("emojis", {})
+    if emojis:
+        top_emojis = sorted(emojis.items(), key=lambda x: x[1], reverse=True)[:5]
+        emoji_text = "\n".join(f"{medals[i]} {e}　**{c}**回" for i, (e, c) in enumerate(top_emojis))
+        embed.add_field(name="🎭 よく使う絵文字 TOP5", value=emoji_text, inline=False)
+    else:
+        embed.add_field(name="🎭 よく使う絵文字 TOP5", value="まだデータなし", inline=False)
+
+    total = sum(messages.values())
+    embed.set_footer(text=f"総発言数: {total}回 ｜ Bot起動後からの集計")
+    await ctx.send(embed=embed)
+
+
+@bot.command()
 async def usage(ctx):
     embed = discord.Embed(
         title="🤖 Botの使い方",
@@ -364,6 +429,11 @@ async def usage(ctx):
     embed.add_field(
         name="🎰 罰ゲームルーレット",
         value="`!roulette` でランダムに罰ゲームを決定\n※特定ユーザーは必ずおごり確定",
+        inline=False,
+    )
+    embed.add_field(
+        name="📊 サーバー統計",
+        value="`!stats` で発言数ランキングと絵文字TOP5を表示",
         inline=False,
     )
     embed.add_field(
