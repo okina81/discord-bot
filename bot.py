@@ -13,7 +13,8 @@ from dotenv import load_dotenv
 from playwright.async_api import async_playwright
 
 load_dotenv()
-TOKEN = os.getenv("DISCORD_TOKEN")
+TOKEN         = os.getenv("DISCORD_TOKEN")
+APEX_API_KEY  = os.getenv("APEX_API_KEY")
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -422,6 +423,11 @@ async def usage(ctx):
         inline=False,
     )
     embed.add_field(
+        name="🗺️ Apex ランクマップ",
+        value="`!rankmap` で現在のランクマッチのマップ・残り時間・次のマップを表示",
+        inline=False,
+    )
+    embed.add_field(
         name="🔥 煽り",
         value="`!roast @ユーザー` で指定した人を煽る",
         inline=False,
@@ -480,6 +486,62 @@ APEX_LEGENDS = {
 async def apex(ctx):
     legend, catchphrase = random.choice(list(APEX_LEGENDS.items()))
     await ctx.send(f"🎯 今日のレジェンドは **{legend}** だ！\n> {catchphrase}")
+
+
+APEX_MAP_JA = {
+    "World's Edge":  "ワールズエッジ",
+    "Storm Point":   "ストームポイント",
+    "Broken Moon":   "ブロークンムーン",
+    "Kings Canyon":  "キングスキャニオン",
+    "Olympus":       "オリンパス",
+}
+
+
+@bot.command()
+async def rankmap(ctx):
+    if not APEX_API_KEY:
+        await ctx.send("❌ APEX_API_KEY が設定されていないよ！")
+        return
+
+    async with aiohttp.ClientSession() as session:
+        url = f"https://api.mozambiquehe.re/maprotation?auth={APEX_API_KEY}&version=2"
+        try:
+            async with session.get(url) as resp:
+                if resp.status != 200:
+                    await ctx.send(f"❌ API エラー: {resp.status}")
+                    return
+                data = await resp.json()
+        except Exception as e:
+            await ctx.send(f"❌ 取得に失敗したよ: {e}")
+            return
+
+    ranked = data.get("ranked", {})
+    current = ranked.get("current", {})
+    nxt     = ranked.get("next", {})
+
+    cur_map  = current.get("map", "不明")
+    cur_map  = APEX_MAP_JA.get(cur_map, cur_map)
+    nxt_map  = nxt.get("map", "不明")
+    nxt_map  = APEX_MAP_JA.get(nxt_map, nxt_map)
+
+    remaining_sec  = current.get("remainingSecs", 0)
+    remaining_min  = remaining_sec // 60
+    remaining_h    = remaining_min // 60
+    remaining_m    = remaining_min % 60
+    if remaining_h:
+        remain_str = f"{remaining_h}時間{remaining_m}分"
+    else:
+        remain_str = f"{remaining_m}分"
+
+    embed = discord.Embed(
+        title="🗺️ Apex ランクマッチ 現在のマップ",
+        color=discord.Color.dark_red(),
+    )
+    embed.add_field(name="🔴 現在", value=f"**{cur_map}**", inline=True)
+    embed.add_field(name="⏱️ 残り時間", value=remain_str, inline=True)
+    embed.add_field(name="⏭️ 次のマップ", value=nxt_map, inline=True)
+    embed.set_footer(text="出典: Apex Legends Status API")
+    await ctx.send(embed=embed)
 
 
 ROASTS = [
