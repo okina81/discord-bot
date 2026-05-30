@@ -347,7 +347,7 @@ async def build_rankmap_embed():
     url = f"https://api.mozambiquehe.re/maprotation?auth={APEX_API_KEY}&version=2"
     async with aiohttp.ClientSession() as session:
         async with session.get(url) as resp:
-            data = await resp.json()
+            data = await resp.json(content_type=None)
     ranked  = data.get("ranked", {})
     current = ranked.get("current", {})
     nxt     = ranked.get("next", {})
@@ -368,7 +368,7 @@ async def build_apexstatus_embed():
     url = f"https://api.mozambiquehe.re/servers?auth={APEX_API_KEY}"
     async with aiohttp.ClientSession() as session:
         async with session.get(url) as resp:
-            data = await resp.json()
+            data = await resp.json(content_type=None)
     embed = discord.Embed(title="🖥️ Apex Legends サーバー状態", color=discord.Color.dark_red())
     for service, regions in data.items():
         if not isinstance(regions, dict):
@@ -390,7 +390,7 @@ async def build_apexstats_embed(username: str, platform: str = "PC"):
     url = f"https://api.mozambiquehe.re/bridge?auth={APEX_API_KEY}&player={username}&platform={platform}"
     async with aiohttp.ClientSession() as session:
         async with session.get(url) as resp:
-            data = await resp.json()
+            data = await resp.json(content_type=None)
     if "Error" in data:
         return None
     g        = data.get("global", {})
@@ -731,7 +731,7 @@ async def rankmap(ctx):
                 if resp.status != 200:
                     await ctx.send(f"❌ API エラー: {resp.status}")
                     return
-                data = await resp.json()
+                data = await resp.json(content_type=None)
         except Exception as e:
             await ctx.send(f"❌ 取得に失敗したよ: {e}")
             return
@@ -792,7 +792,7 @@ async def apexstats(ctx, username: str, platform: str = "PC"):
     async with aiohttp.ClientSession() as session:
         try:
             async with session.get(url) as resp:
-                data = await resp.json()
+                data = await resp.json(content_type=None)
         except Exception as e:
             await ctx.send(f"❌ 取得に失敗したよ: {e}")
             return
@@ -848,7 +848,7 @@ async def apexstatus(ctx):
     async with aiohttp.ClientSession() as session:
         try:
             async with session.get(url) as resp:
-                data = await resp.json()
+                data = await resp.json(content_type=None)
         except Exception as e:
             await ctx.send(f"❌ 取得に失敗したよ: {e}")
             return
