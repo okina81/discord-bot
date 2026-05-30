@@ -370,6 +370,20 @@ PC_SERVICES = {
     "EA_accounts":   "👤 アカウント",
 }
 
+# 2025年4月 AWS 移行後のリージョン対応表
+AWS_REGION_LABEL = {
+    "EU-West":      "eu-central-1 (フランクフルト)",
+    "EU-East":      "eu-central-1 (フランクフルト)",
+    "US-West":      "us-west-2 (オレゴン)",
+    "US-Central":   "us-east-2 (オハイオ)",
+    "US-East":      "us-east-1 (バージニア)",
+    "SouthAmerica": "sa-east-1 (サンパウロ)",
+    "Asia":         "ap-northeast-1 (東京)",
+    "MiddleEast":   "me-south-1 (バーレーン)",
+    "Oceania":      "ap-southeast-2 (シドニー)",
+    "Asia-HK":      "ap-east-1 (香港)",
+}
+
 
 async def build_apexstatus_embed():
     url = f"https://api.mozambiquehe.re/servers?auth={APEX_API_KEY}"
@@ -382,14 +396,14 @@ async def build_apexstatus_embed():
         if not isinstance(regions, dict):
             continue
         lines = [
-            f"{'🟢' if v.get('Status') == 'UP' else '🔴'} {k}　{v.get('ResponseTime', '?')}ms"
+            f"{'🟢' if v.get('Status') == 'UP' else '🔴'} {AWS_REGION_LABEL.get(k, k)}　{v.get('ResponseTime', '?')}ms"
             for k, v in regions.items() if isinstance(v, dict)
         ]
         all_up = all(v.get("Status") == "UP" for v in regions.values() if isinstance(v, dict))
         any_up = any(v.get("Status") == "UP" for v in regions.values() if isinstance(v, dict))
         icon   = "🟢" if all_up else ("🟡" if any_up else "🔴")
         embed.add_field(name=f"{icon} {label}", value="\n".join(lines) or "データなし", inline=False)
-    embed.set_footer(text="出典: Apex Legends Status API")
+    embed.set_footer(text="出典: Apex Legends Status API | AWS移行 2025年4月")
     return embed
 
 
@@ -868,7 +882,7 @@ async def apexstatus(ctx):
         if not isinstance(regions, dict):
             continue
         lines = [
-            f"{'🟢' if v.get('Status') == 'UP' else '🔴'} {k}　{v.get('ResponseTime', '?')}ms"
+            f"{'🟢' if v.get('Status') == 'UP' else '🔴'} {AWS_REGION_LABEL.get(k, k)}　{v.get('ResponseTime', '?')}ms"
             for k, v in regions.items() if isinstance(v, dict)
         ]
         all_up = all(v.get("Status") == "UP" for v in regions.values() if isinstance(v, dict))
@@ -876,7 +890,7 @@ async def apexstatus(ctx):
         icon   = "🟢" if all_up else ("🟡" if any_up else "🔴")
         embed.add_field(name=f"{icon} {label}", value="\n".join(lines) or "データなし", inline=False)
 
-    embed.set_footer(text="出典: Apex Legends Status API")
+    embed.set_footer(text="出典: Apex Legends Status API | AWS移行 2025年4月")
     await ctx.send(embed=embed)
 
 
