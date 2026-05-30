@@ -364,13 +364,21 @@ async def build_rankmap_embed():
     return embed
 
 
+PC_SERVICES = {
+    "EA_novafusion": "🎮 ゲームサーバー",
+    "Origin_login":  "🔑 ログイン",
+    "EA_accounts":   "👤 アカウント",
+}
+
+
 async def build_apexstatus_embed():
     url = f"https://api.mozambiquehe.re/servers?auth={APEX_API_KEY}"
     async with aiohttp.ClientSession() as session:
         async with session.get(url) as resp:
             data = await resp.json(content_type=None)
-    embed = discord.Embed(title="🖥️ Apex Legends サーバー状態", color=discord.Color.dark_red())
-    for service, regions in data.items():
+    embed = discord.Embed(title="🖥️ Apex Legends サーバー状態（PC）", color=discord.Color.dark_red())
+    for key, label in PC_SERVICES.items():
+        regions = data.get(key, {})
         if not isinstance(regions, dict):
             continue
         lines = [
@@ -380,7 +388,7 @@ async def build_apexstatus_embed():
         all_up = all(v.get("Status") == "UP" for v in regions.values() if isinstance(v, dict))
         any_up = any(v.get("Status") == "UP" for v in regions.values() if isinstance(v, dict))
         icon   = "🟢" if all_up else ("🟡" if any_up else "🔴")
-        embed.add_field(name=f"{icon} {service}", value="\n".join(lines) or "データなし", inline=False)
+        embed.add_field(name=f"{icon} {label}", value="\n".join(lines) or "データなし", inline=False)
     embed.set_footer(text="出典: Apex Legends Status API")
     return embed
 
@@ -853,28 +861,20 @@ async def apexstatus(ctx):
             await ctx.send(f"❌ 取得に失敗したよ: {e}")
             return
 
-    embed = discord.Embed(title="🖥️ Apex Legends サーバー状態", color=discord.Color.dark_red())
+    embed = discord.Embed(title="🖥️ Apex Legends サーバー状態（PC）", color=discord.Color.dark_red())
 
-    for service, regions in data.items():
+    for key, label in PC_SERVICES.items():
+        regions = data.get(key, {})
         if not isinstance(regions, dict):
             continue
-        lines = []
-        for region, info in regions.items():
-            if not isinstance(info, dict):
-                continue
-            ok  = info.get("Status") == "UP"
-            ms  = info.get("ResponseTime", "?")
-            lines.append(f"{'🟢' if ok else '🔴'} {region}　{ms}ms")
-
-        all_up  = all(info.get("Status") == "UP" for info in regions.values() if isinstance(info, dict))
-        any_up  = any(info.get("Status") == "UP" for info in regions.values() if isinstance(info, dict))
-        icon    = "🟢" if all_up else ("🟡" if any_up else "🔴")
-
-        embed.add_field(
-            name=f"{icon} {service}",
-            value="\n".join(lines) or "データなし",
-            inline=False,
-        )
+        lines = [
+            f"{'🟢' if v.get('Status') == 'UP' else '🔴'} {k}　{v.get('ResponseTime', '?')}ms"
+            for k, v in regions.items() if isinstance(v, dict)
+        ]
+        all_up = all(v.get("Status") == "UP" for v in regions.values() if isinstance(v, dict))
+        any_up = any(v.get("Status") == "UP" for v in regions.values() if isinstance(v, dict))
+        icon   = "🟢" if all_up else ("🟡" if any_up else "🔴")
+        embed.add_field(name=f"{icon} {label}", value="\n".join(lines) or "データなし", inline=False)
 
     embed.set_footer(text="出典: Apex Legends Status API")
     await ctx.send(embed=embed)
