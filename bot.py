@@ -21,6 +21,9 @@ RECRUIT_KEYWORDS = ["募集", "募", "ぼ"]
 TARGET_USER_IDS = [512510702129512469, 1133749381250695269]
 ALLOWED_CHANNEL_IDS = [1509231531326181406]
 
+# 募集投票のメッセージID → 送信先チャンネルID を管理
+recruit_polls: dict[int, int] = {}
+
 # 原神 特産品辞書 {特産品名: (地域, 場所)}
 GENSHIN_TOKUSANHIN = {
     # ── モンド ──
@@ -125,6 +128,61 @@ async def on_ready():
 
 
 @bot.event
+async def on_raw_reaction_add(payload):
+    if payload.user_id == bot.user.id:
+        return
+    if payload.message_id not in recruit_polls:
+        return
+    if str(payload.emoji) != "🕐":
+        return
+
+    guild  = bot.get_guild(payload.guild_id)
+    member = guild.get_member(payload.user_id)
+    if member is None:
+        return
+
+    recruit_channel = bot.get_channel(recruit_polls[payload.message_id])
+
+    # DMで何分後か確認
+    try:
+        await member.send(
+            "🕐 何分後（何時間後）に参加できる？\n"
+            "例: `10m`（10分後）　`1h30m`（1時間30分後）　`30s`（30秒後）"
+        )
+    except discord.Forbidden:
+        await recruit_channel.send(
+            f"{member.mention} DMが送れなかったよ。何分後に参加できるか教えて！"
+        )
+        return
+
+    def is_reply(m):
+        return m.author.id == payload.user_id and isinstance(m.channel, discord.DMChannel)
+
+    try:
+        reply = await bot.wait_for("message", check=is_reply, timeout=60)
+    except asyncio.TimeoutError:
+        await member.send("⌛ タイムアウトしたよ。もう一度 🕐 を押してね。")
+        return
+
+    seconds = parse_duration(reply.content.strip())
+    if seconds is None:
+        await member.send("❌ 形式が合ってないよ！例: `10m` `1h30m` `30s`")
+        return
+    if seconds > 3 * 3600:
+        await member.send("❌ タイマーは最大3時間までだよ！")
+        return
+
+    label = format_duration(seconds)
+    await member.send(f"⏱️ わかった！{label}後に教えるね。")
+
+    await asyncio.sleep(seconds)
+
+    await recruit_channel.send(
+        f"⏰ {member.mention} {label}経ったぞ！そろそろゲーム参加できる？"
+    )
+
+
+@bot.event
 async def on_message(message):
     if message.author.bot:
         return
@@ -150,6 +208,7 @@ async def on_message(message):
         await poll.add_reaction("✅")
         await poll.add_reaction("🕐")
         await poll.add_reaction("❌")
+        recruit_polls[poll.id] = recruit_channel.id
 
     if message.author.id in TARGET_USER_IDS:
         if random.random() < 0.03:
