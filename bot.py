@@ -428,6 +428,16 @@ async def usage(ctx):
         inline=False,
     )
     embed.add_field(
+        name="👤 Apex プレイヤー統計",
+        value="`!apexstats EA名` でレベル・ランク・オンライン状態を表示\n例: `!apexstats PlayerName` `!apexstats PlayerName PS4`",
+        inline=False,
+    )
+    embed.add_field(
+        name="🖥️ Apex サーバー状態",
+        value="`!apexstatus` でサーバーの稼働状況をリージョン別に表示",
+        inline=False,
+    )
+    embed.add_field(
         name="🔥 煽り",
         value="`!roast @ユーザー` で指定した人を煽る",
         inline=False,
@@ -540,6 +550,121 @@ async def rankmap(ctx):
     embed.add_field(name="🔴 現在", value=f"**{cur_map}**", inline=True)
     embed.add_field(name="⏱️ 残り時間", value=remain_str, inline=True)
     embed.add_field(name="⏭️ 次のマップ", value=nxt_map, inline=True)
+    embed.set_footer(text="出典: Apex Legends Status API")
+    await ctx.send(embed=embed)
+
+
+RANK_EMOJI = {
+    "Rookie":         "🔰",
+    "Bronze":         "🥉",
+    "Silver":         "🩶",
+    "Gold":           "🥇",
+    "Platinum":       "🩵",
+    "Diamond":        "💎",
+    "Master":         "🟣",
+    "Apex Predator":  "🔴",
+}
+
+PLATFORM_ALIAS = {"pc": "PC", "ps4": "PS4", "ps": "PS4", "xbox": "X1", "x1": "X1"}
+
+
+@bot.command()
+async def apexstats(ctx, username: str, platform: str = "PC"):
+    """!apexstats <EA名> [PC/PS4/X1]"""
+    if not APEX_API_KEY:
+        await ctx.send("❌ APEX_API_KEY が設定されていないよ！")
+        return
+
+    platform = PLATFORM_ALIAS.get(platform.lower(), "PC")
+    url = f"https://api.mozambiquehe.re/bridge?auth={APEX_API_KEY}&player={username}&platform={platform}"
+
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.get(url) as resp:
+                data = await resp.json()
+        except Exception as e:
+            await ctx.send(f"❌ 取得に失敗したよ: {e}")
+            return
+
+    if "Error" in data:
+        await ctx.send(f"❌ プレイヤーが見つからなかったよ（EA名とプラットフォームを確認してね）")
+        return
+
+    g        = data.get("global", {})
+    rank     = g.get("rank", {})
+    realtime = data.get("realtime", {})
+
+    rank_name  = rank.get("rankName", "不明")
+    rank_div   = rank.get("rankDiv", 0)
+    rank_rp    = rank.get("rankScore", 0)
+    rank_emoji = RANK_EMOJI.get(rank_name, "🎮")
+    div_label  = ["IV", "III", "II", "I"][rank_div - 1] if 1 <= rank_div <= 4 else ""
+    rank_str   = f"{rank_name} {div_label}".strip() if div_label else rank_name
+
+    level     = g.get("level", "?")
+    level_pct = g.get("toNextLevelPercent", 0)
+
+    if realtime.get("isInGame"):
+        state = "🟢 ゲーム中"
+    elif realtime.get("isOnline"):
+        state = "🟡 オンライン"
+    else:
+        state = "⚫ オフライン"
+
+    legend = realtime.get("selectedLegend", "")
+
+    embed = discord.Embed(
+        title=f"🎮 {g.get('name', username)} の統計",
+        color=discord.Color.dark_red(),
+    )
+    embed.add_field(name="📊 レベル",          value=f"Lv.{level}（{level_pct}%）", inline=True)
+    embed.add_field(name=f"{rank_emoji} ランク", value=f"{rank_str}\n{rank_rp:,} RP",  inline=True)
+    embed.add_field(name="🔵 状態",             value=state,                           inline=True)
+    if legend:
+        embed.add_field(name="🦸 選択レジェンド", value=legend, inline=True)
+    embed.set_footer(text=f"Platform: {platform} | 出典: Apex Legends Status API")
+    await ctx.send(embed=embed)
+
+
+@bot.command()
+async def apexstatus(ctx):
+    """Apex サーバーの稼働状態を確認"""
+    if not APEX_API_KEY:
+        await ctx.send("❌ APEX_API_KEY が設定されていないよ！")
+        return
+
+    url = f"https://api.mozambiquehe.re/servers?auth={APEX_API_KEY}"
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.get(url) as resp:
+                data = await resp.json()
+        except Exception as e:
+            await ctx.send(f"❌ 取得に失敗したよ: {e}")
+            return
+
+    embed = discord.Embed(title="🖥️ Apex Legends サーバー状態", color=discord.Color.dark_red())
+
+    for service, regions in data.items():
+        if not isinstance(regions, dict):
+            continue
+        lines = []
+        for region, info in regions.items():
+            if not isinstance(info, dict):
+                continue
+            ok  = info.get("Status") == "UP"
+            ms  = info.get("ResponseTime", "?")
+            lines.append(f"{'🟢' if ok else '🔴'} {region}　{ms}ms")
+
+        all_up  = all(info.get("Status") == "UP" for info in regions.values() if isinstance(info, dict))
+        any_up  = any(info.get("Status") == "UP" for info in regions.values() if isinstance(info, dict))
+        icon    = "🟢" if all_up else ("🟡" if any_up else "🔴")
+
+        embed.add_field(
+            name=f"{icon} {service}",
+            value="\n".join(lines) or "データなし",
+            inline=False,
+        )
+
     embed.set_footer(text="出典: Apex Legends Status API")
     await ctx.send(embed=embed)
 
