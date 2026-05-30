@@ -140,14 +140,15 @@ async def on_message(message):
     if any(kw in message.content for kw in RECRUIT_KEYWORDS):
         embed = discord.Embed(
             title="🎮 ゲーム募集",
-            description=f"**{message.author.display_name}** さんが一緒にゲームをする人を募集しています！\n\n参加できる人は ✅ を押してください！",
+            description=f"**{message.author.display_name}** さんが一緒にゲームをする人を募集しています！",
             color=discord.Color.green(),
         )
-        embed.set_footer(text="❌ = 参加できない")
+        embed.set_footer(text="✅ 参加する　🕐 後から参加　❌ 参加できない")
 
         recruit_channel = bot.get_channel(1134854694645276703)
         poll = await recruit_channel.send(embed=embed)
         await poll.add_reaction("✅")
+        await poll.add_reaction("🕐")
         await poll.add_reaction("❌")
 
     if message.author.id in TARGET_USER_IDS:
