@@ -122,6 +122,24 @@ async def get_pokemon_stats(pokemon_id):
     return ja_name, data["id"], stats
 
 
+async def notify_game_start(poll_msg_id, channel_id, seconds, time_str):
+    """指定秒数後に、募集メッセージの ✅ リアクションを押した全員をメンションする"""
+    await asyncio.sleep(seconds)
+    channel = bot.get_channel(channel_id)
+    try:
+        poll_msg = await channel.fetch_message(poll_msg_id)
+    except discord.NotFound:
+        return
+    mentions = []
+    for reaction in poll_msg.reactions:
+        if str(reaction.emoji) == "✅":
+            async for user in reaction.users():
+                if not user.bot:
+                    mentions.append(user.mention)
+    mention_str = " ".join(mentions) if mentions else ""
+    await channel.send(f"⏰ **{time_str}** になったぞ！ゲーム開始の時間だ！\n{mention_str}")
+
+
 @bot.event
 async def on_ready():
     print(f"{bot.user} としてログインしました")
@@ -210,9 +228,19 @@ async def on_message(message):
         return
 
     if any(kw in message.content for kw in RECRUIT_KEYWORDS):
+        time_result = extract_clock_time(message.content)
+        if time_result:
+            _, time_str = time_result
+            description = (
+                f"**{message.author.display_name}** さんが "
+                f"**{time_str}から** 一緒にゲームをする人を募集しています！"
+            )
+        else:
+            description = f"**{message.author.display_name}** さんが一緒にゲームをする人を募集しています！"
+
         embed = discord.Embed(
             title="🎮 ゲーム募集",
-            description=f"**{message.author.display_name}** さんが一緒にゲームをする人を募集しています！",
+            description=description,
             color=discord.Color.green(),
         )
         embed.set_footer(text="✅ 参加する　🕐 後から参加　❌ 参加できない")
@@ -223,6 +251,12 @@ async def on_message(message):
         await poll.add_reaction("🕐")
         await poll.add_reaction("❌")
         recruit_polls[poll.id] = recruit_channel.id
+
+        if time_result:
+            seconds_until, time_str = time_result
+            asyncio.create_task(
+                notify_game_start(poll.id, recruit_channel.id, seconds_until, time_str)
+            )
 
     if message.author.id in TARGET_USER_IDS:
         if random.random() < 0.03:
@@ -521,6 +555,25 @@ def parse_clock_time(text):
     if target <= now:
         target += datetime.timedelta(days=1)
 
+    seconds  = int((target - now).total_seconds())
+    time_str = f"{hour}時" + (f"{minute}分" if minute else "")
+    return seconds, time_str
+
+
+def extract_clock_time(text):
+    """メッセージ全体から '〇時' '〇時〇分から' パターンを探して (秒数, 表示文字列) を返す。
+    見つからない場合は None を返す。"""
+    m = re.search(r'(\d{1,2})時(?:(\d{1,2})分)?(?:から)?', text)
+    if not m:
+        return None
+    hour   = int(m.group(1))
+    minute = int(m.group(2) or 0)
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        return None
+    now    = datetime.datetime.now()
+    target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if target <= now:
+        target += datetime.timedelta(days=1)
     seconds  = int((target - now).total_seconds())
     time_str = f"{hour}時" + (f"{minute}分" if minute else "")
     return seconds, time_str
