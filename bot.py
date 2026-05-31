@@ -1114,7 +1114,7 @@ async def generate_ai_news(history: str, member_names: list[str]) -> str | None:
 - 日本語のみ・説明文は不要"""
         resp = await asyncio.to_thread(
             _gemini_client.models.generate_content,
-            model="gemini-2.0-flash",
+            model="gemini-2.5-flash-lite",
             contents=prompt,
         )
         return resp.text.strip()
