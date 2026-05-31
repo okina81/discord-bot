@@ -8,13 +8,17 @@ import time
 from pathlib import Path
 import aiohttp
 import discord
+import google.generativeai as genai
 from discord.ext import commands
 from dotenv import load_dotenv
 from playwright.async_api import async_playwright
 
 load_dotenv()
-TOKEN         = os.getenv("DISCORD_TOKEN")
-APEX_API_KEY  = os.getenv("APEX_API_KEY")
+TOKEN          = os.getenv("DISCORD_TOKEN")
+APEX_API_KEY   = os.getenv("APEX_API_KEY")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -620,17 +624,23 @@ class PanelView(discord.ui.View):
         if len(members) < 2:
             await interaction.response.send_message("❌ メンバーが足りないよ！")
             return
-        count = random.randint(2, 3)
-        items = random.sample(NEWS_TEMPLATES, min(count, len(NEWS_TEMPLATES)))
-        icons = ["📰", "⚡", "🔥", "💥", "🚨"]
-        lines = [f"{icons[i % len(icons)]} {fill_template(t, members)}" for i, t in enumerate(items)]
-        embed = discord.Embed(
-            title="📰 速報 — 今北Bot通信社",
-            description="\n\n".join(lines),
-            color=discord.Color.yellow(),
-        )
-        embed.set_footer(text="※ この記事はフィクションです")
-        await interaction.response.send_message(embed=embed)
+        await interaction.response.defer(thinking=True)
+        ai_text = None
+        if GEMINI_API_KEY:
+            history = await scan_messages(interaction.guild)
+            names   = [m.display_name for m in members]
+            ai_text = await generate_ai_news(history, names)
+        if ai_text:
+            embed = discord.Embed(title="📰 速報 — 今北Bot通信社", description=ai_text, color=discord.Color.yellow())
+            embed.set_footer(text="※ AIがチャット履歴を学習して生成したフィクションです")
+        else:
+            count = random.randint(2, 3)
+            items = random.sample(NEWS_TEMPLATES, min(count, len(NEWS_TEMPLATES)))
+            icons = ["📰", "⚡", "🔥", "💥", "🚨"]
+            lines = [f"{icons[i % len(icons)]} {fill_template(t, members)}" for i, t in enumerate(items)]
+            embed = discord.Embed(title="📰 速報 — 今北Bot通信社", description="\n\n".join(lines), color=discord.Color.yellow())
+            embed.set_footer(text="※ この記事はフィクションです")
+        await interaction.followup.send(embed=embed)
 
 
 @bot.command()
@@ -1069,23 +1079,83 @@ def fill_template(template: str, members: list) -> str:
 
 
 @bot.command()
+async def scan_messages(guild: discord.Guild, limit: int = 300) -> str:
+    """ALLOWED_CHANNEL_IDS の直近メッセージを時系列テキストで返す"""
+    lines = []
+    for cid in ALLOWED_CHANNEL_IDS:
+        ch = guild.get_channel(cid)
+        if ch is None:
+            continue
+        async for msg in ch.history(limit=limit):
+            if msg.author.bot or not msg.content.strip():
+                continue
+            lines.append(f"{msg.author.display_name}: {msg.content}")
+    return "\n".join(reversed(lines))
+
+
+async def generate_ai_news(history: str, member_names: list[str]) -> str | None:
+    """Gemini でメッセージ履歴から内輪ネタニュースを生成する"""
+    if not GEMINI_API_KEY:
+        return None
+    try:
+        model  = genai.GenerativeModel("gemini-1.5-flash")
+        prompt = f"""以下のDiscordサーバーのチャット履歴を読んで、
+メンバーの口癖・内輪ネタ・よくあるパターンを分析し、
+面白いフィクションのゲームニュースを3本生成してください。
+
+メンバー一覧: {', '.join(member_names)}
+
+チャット履歴（直近）:
+{history[:4000]}
+
+出力ルール:
+- 各ニュースは1〜2文、先頭に📰 ⚡ 🔥 のいずれかをつける
+- 実際の会話から拾った口癖・単語・ネタを必ず使う
+- Apexや他ゲームのネタも歓迎
+- 3本を改行2つで区切って出力
+- 日本語のみ・説明文は不要"""
+        resp = await asyncio.to_thread(model.generate_content, prompt)
+        return resp.text.strip()
+    except Exception:
+        return None
+
+
+@bot.command()
 async def news(ctx):
     members = [m for m in ctx.guild.members if not m.bot]
     if len(members) < 2:
         await ctx.send("❌ メンバーが足りないよ！")
         return
 
-    count   = random.randint(2, 3)
-    items   = random.sample(NEWS_TEMPLATES, min(count, len(NEWS_TEMPLATES)))
-    icons   = ["📰", "⚡", "🔥", "💥", "🚨"]
-    lines   = [f"{icons[i % len(icons)]} {fill_template(t, members)}" for i, t in enumerate(items)]
+    msg = await ctx.send("📰 ニュースを生成中...")
 
-    embed = discord.Embed(
-        title="📰 速報 — 今北Bot通信社",
-        description="\n\n".join(lines),
-        color=discord.Color.yellow(),
-    )
-    embed.set_footer(text="※ この記事はフィクションです")
+    ai_text = None
+    if GEMINI_API_KEY:
+        history  = await scan_messages(ctx.guild)
+        names    = [m.display_name for m in members]
+        ai_text  = await generate_ai_news(history, names)
+
+    if ai_text:
+        embed = discord.Embed(
+            title="📰 速報 — 今北Bot通信社",
+            description=ai_text,
+            color=discord.Color.yellow(),
+        )
+        embed.set_footer(text="※ AIがチャット履歴を学習して生成したフィクションです")
+    else:
+        # フォールバック: テンプレート
+        count = random.randint(2, 3)
+        items = random.sample(NEWS_TEMPLATES, min(count, len(NEWS_TEMPLATES)))
+        icons = ["📰", "⚡", "🔥", "💥", "🚨"]
+        lines = [f"{icons[i % len(icons)]} {fill_template(t, members)}" for i, t in enumerate(items)]
+        embed = discord.Embed(
+            title="📰 速報 — 今北Bot通信社",
+            description="\n\n".join(lines),
+            color=discord.Color.yellow(),
+        )
+        embed.set_footer(text="※ この記事はフィクションです")
+
+    await msg.delete()
     await ctx.send(embed=embed)
 
 
