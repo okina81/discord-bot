@@ -26,6 +26,8 @@ RECRUIT_KEYWORDS = ["募集", "募", "ぼ"]
 TARGET_USER_IDS = [512510702129512469, 1133749381250695269]
 ALLOWED_CHANNEL_IDS = [1509231531326181406]
 
+JST = datetime.timezone(datetime.timedelta(hours=9))
+
 # 募集投票のメッセージID → {"channel_id": int, "start_at": datetime | None}
 recruit_polls: dict[int, dict] = {}
 
@@ -175,7 +177,7 @@ async def on_raw_reaction_add(payload):
         if start_at:
             # 開始時刻 + 指定時間 を通知タイミングにする
             notify_at  = start_at + datetime.timedelta(seconds=duration_sec)
-            seconds    = max(0, int((notify_at - datetime.datetime.now()).total_seconds()))
+            seconds    = max(0, int((notify_at - datetime.datetime.now(JST)).total_seconds()))
             notify_str = f"{notify_at.hour}時" + (f"{notify_at.minute}分" if notify_at.minute else "")
             confirm    = f"⏱️ わかった！{notify_str}（{time_str_base}の{format_duration(duration_sec)}後）に教えるね。"
             notify     = f"⏰ {member.mention} {notify_str}になったぞ！そろそろゲーム参加できる？"
@@ -1057,7 +1059,7 @@ def parse_clock_time(text):
     if not (0 <= hour <= 23 and 0 <= minute <= 59):
         return None
 
-    now    = datetime.datetime.now()
+    now    = datetime.datetime.now(JST)
     target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
     if target <= now:
         target += datetime.timedelta(days=1)
@@ -1077,7 +1079,7 @@ def extract_clock_time(text):
     minute = int(m.group(2) or 0)
     if not (0 <= hour <= 23 and 0 <= minute <= 59):
         return None
-    now    = datetime.datetime.now()
+    now    = datetime.datetime.now(JST)
     target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
     if target <= now:
         target += datetime.timedelta(days=1)
