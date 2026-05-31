@@ -1078,17 +1078,19 @@ def fill_template(template: str, members: list) -> str:
 
 
 @bot.command()
-async def scan_messages(guild: discord.Guild, limit: int = 300) -> str:
-    """ALLOWED_CHANNEL_IDS の直近メッセージを時系列テキストで返す"""
+async def scan_messages(guild: discord.Guild, limit: int = 100) -> str:
+    """サーバー内の全テキストチャンネルの直近メッセージを時系列テキストで返す"""
     lines = []
-    for cid in ALLOWED_CHANNEL_IDS:
-        ch = guild.get_channel(cid)
-        if ch is None:
+    for ch in guild.text_channels:
+        if not ch.permissions_for(guild.me).read_message_history:
             continue
-        async for msg in ch.history(limit=limit):
-            if msg.author.bot or not msg.content.strip():
-                continue
-            lines.append(f"{msg.author.display_name}: {msg.content}")
+        try:
+            async for msg in ch.history(limit=limit):
+                if msg.author.bot or not msg.content.strip():
+                    continue
+                lines.append(f"{msg.author.display_name}: {msg.content}")
+        except discord.Forbidden:
+            continue
     return "\n".join(reversed(lines))
 
 
