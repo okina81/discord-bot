@@ -751,6 +751,11 @@ async def usage(ctx):
         inline=False,
     )
     embed.add_field(
+        name="🎮 Undertaleバトル",
+        value="`!battle` でランダムな敵とバトル開始\nFIGHT/ACT/ITEM/MERCY＋ドッジ回避あり　`!endbattle` で強制終了",
+        inline=False,
+    )
+    embed.add_field(
         name="📰 フェイクニュース",
         value="`!news` でサーバーメンバーが登場するフィクションのゲームニュースを生成",
         inline=False,
@@ -1370,5 +1375,320 @@ async def who(ctx):
 async def hello(ctx):
     await ctx.send(f"こんにちは、{ctx.author.name}さん！")
 
+
+# ── Undertale風バトル ────────────────────────────────────────────
+
+UT_ENEMIES = [
+    {
+        "name": "フロギット",
+        "hp": 12, "atk": 3,
+        "flavor": "なんかぴょんぴょん跳んでいる。",
+        "acts": {
+            "なでる": (True,  "* フロギットはうっとりしている。"),
+            "みる":   (False, "* ATK 3  DEF 0\n  かわいいカエル。なぜここにいるのか。"),
+        },
+        "attack_lines": [
+            "* フロギットが体当たりしてきた！",
+            "* フロギットがぴょんと跳びかかった！",
+        ],
+        "spare_line": "* フロギットは跳んで逃げた。よかった。",
+    },
+    {
+        "name": "Napstablook",
+        "hp": 1, "atk": 2,
+        "flavor": "ゆうれいのDJです。",
+        "acts": {
+            "なぐさめる": (True,  "* Napstablookは少し元気になった。"),
+            "きく":       (True,  "* 音楽に耳を傾けた。悪くない。"),
+            "みる":       (False, "* ATK 2  DEF 0\n  ゆうれい。"),
+        },
+        "attack_lines": [
+            "* Napstablookの音波攻撃！",
+            "* なんとなく攻撃してきた。",
+        ],
+        "spare_line": "* Napstablookはゆっくり消えていった。\n  あ、ありがとう...",
+    },
+    {
+        "name": "トリエル",
+        "hp": 20, "atk": 4,
+        "flavor": "おかあさんみたいな人。",
+        "acts": {
+            "はなす": (True,  "* トリエルはやさしく微笑んだ。"),
+            "ほめる": (True,  "* トリエルは照れくさそうにした。"),
+            "みる":   (False, "* ATK 4  DEF 4\n  ゴートマム。パイが得意。"),
+        },
+        "attack_lines": [
+            "* トリエルが炎魔法を放った！",
+            "* トリエルが魔法陣を展開した！",
+        ],
+        "spare_line": "* トリエルは優しく笑って手を振った。\n  「気をつけてね、我が子よ。」",
+    },
+    {
+        "name": "サンズ",
+        "hp": 1, "atk": 9,
+        "flavor": "zzz...",
+        "acts": {
+            "みる":     (False, "* ATK ？？？  DEF ？？？\n  「いや、だいじょうぶ。」"),
+            "あくしゅ": (True,  "* サンズは手を振った。\n  最初から友達みたいだ。"),
+        },
+        "attack_lines": [
+            "* サンズが骨を投げてきた！",
+            "* KARMA！",
+            "* 「bad time だね。」",
+            "* サンズがGASTERBLASTERを放った！",
+            "* 「おまえは、ほんとうに　あきらめないんだな。」",
+        ],
+        "spare_line": "* サンズはニッと笑った。\n  「まあ、こうなることは　わかってたけど。」\n  そして消えた。",
+        "special": True,
+    },
+]
+
+active_battles: dict[int, dict] = {}
+
+
+def ut_hp_bar(cur: int, max_: int, width: int = 10) -> str:
+    filled = max(0, round(cur / max_ * width))
+    return "█" * filled + "░" * (width - filled)
+
+
+def build_ut_embed(state: dict) -> discord.Embed:
+    enemy  = state["enemy"]
+    e_hp   = state["enemy_hp"]
+    e_max  = enemy["hp"]
+    p_hp   = state["player_hp"]
+    p_max  = state["player_max_hp"]
+    love   = state["love"]
+    is_sans = enemy.get("special", False)
+
+    color = discord.Color.from_rgb(0, 0, 0) if is_sans else discord.Color.dark_red()
+    embed = discord.Embed(color=color)
+    embed.add_field(
+        name=f"👾 {enemy['name']}",
+        value=f"`{ut_hp_bar(e_hp, e_max)}` {e_hp}/{e_max} HP",
+        inline=False,
+    )
+    embed.add_field(
+        name="💬",
+        value=state.get("msg_text", f"* {enemy['name']}があらわれた！\n  {enemy['flavor']}"),
+        inline=False,
+    )
+    hearts = "❤️" if p_hp > p_max * 0.5 else ("🧡" if p_hp > p_max * 0.2 else "💛")
+    embed.add_field(
+        name=f"{hearts} {state['player'].display_name}",
+        value=(
+            f"`{ut_hp_bar(p_hp, p_max)}` {p_hp}/{p_max} HP"
+            + (f"\n💛 LOVE {love}/2" if love > 0 else "")
+            + f"\n🍫 スパイシードッグ ×{state['items']}"
+        ),
+        inline=False,
+    )
+    return embed
+
+
+class UtActView(discord.ui.View):
+    def __init__(self, state: dict):
+        super().__init__(timeout=30)
+        self.state = state
+        for act_name in state["enemy"]["acts"]:
+            btn = discord.ui.Button(label=act_name, style=discord.ButtonStyle.primary)
+            btn.callback = self._make_cb(act_name)
+            self.add_item(btn)
+        back = discord.ui.Button(label="← もどる", style=discord.ButtonStyle.secondary)
+        back.callback = self._back
+        self.add_item(back)
+
+    def _make_cb(self, act_name: str):
+        async def cb(interaction: discord.Interaction):
+            if interaction.user.id != self.state["player"].id:
+                await interaction.response.send_message("あなたのバトルじゃないよ！", ephemeral=True)
+                return
+            raises_love, text = self.state["enemy"]["acts"][act_name]
+            self.state["msg_text"] = text
+            if raises_love:
+                self.state["love"] = min(2, self.state["love"] + 1)
+            self.stop()
+            await _ut_enemy_attack(interaction, self.state)
+        return cb
+
+    async def _back(self, interaction: discord.Interaction, button):
+        if interaction.user.id != self.state["player"].id:
+            await interaction.response.send_message("あなたのバトルじゃないよ！", ephemeral=True)
+            return
+        self.stop()
+        await interaction.response.edit_message(embed=build_ut_embed(self.state), view=UtMainView(self.state))
+
+
+class UtDodgeView(discord.ui.View):
+    def __init__(self, state: dict, safe: str):
+        super().__init__(timeout=4)
+        self.state  = state
+        self.safe   = safe
+        self.picked: str | None = None
+        for d in ["⬆️", "⬇️", "⬅️", "➡️"]:
+            btn = discord.ui.Button(label=d, style=discord.ButtonStyle.secondary)
+            btn.callback = self._make_cb(d)
+            self.add_item(btn)
+
+    def _make_cb(self, direction: str):
+        async def cb(interaction: discord.Interaction):
+            if interaction.user.id != self.state["player"].id:
+                await interaction.response.send_message("あなたのバトルじゃないよ！", ephemeral=True)
+                return
+            self.picked = direction
+            self.stop()
+            await self._resolve(interaction)
+        return cb
+
+    async def on_timeout(self):
+        await self._resolve(None)
+
+    async def _resolve(self, interaction):
+        state  = self.state
+        enemy  = state["enemy"]
+        dodged = self.picked == self.safe
+
+        if dodged:
+            state["msg_text"] = "* うまく回避した！"
+        else:
+            dmg = enemy["atk"]
+            # サンズは追い打ち：外れるとKARMAも蓄積するフレーバー
+            if enemy.get("special") and not dodged:
+                state["msg_text"] = f"* KARMA！　{dmg}ダメージ！\n  「あきらめろよ。」"
+            elif self.picked is None:
+                state["msg_text"] = f"* 回避できなかった！　{dmg}ダメージ！"
+            else:
+                state["msg_text"] = f"* 避け損ねた！　{dmg}ダメージ！"
+            state["player_hp"] = max(0, state["player_hp"] - dmg)
+
+        embed = build_ut_embed(state)
+
+        if state["player_hp"] <= 0:
+            if enemy.get("special"):
+                embed.description = "**★ GAME OVER ★**\n* 「おつかれ。でも、わかってたろ？」"
+            else:
+                embed.description = "**★ GAME OVER ★**\n* でも、あきらめないで。"
+            active_battles.pop(state["player"].id, None)
+            next_view = None
+        else:
+            next_view = UtMainView(state)
+
+        if interaction:
+            await interaction.response.edit_message(embed=embed, view=next_view)
+        else:
+            try:
+                await state["battle_msg"].edit(embed=embed, view=next_view)
+            except Exception:
+                pass
+
+
+class UtMainView(discord.ui.View):
+    def __init__(self, state: dict):
+        super().__init__(timeout=60)
+        self.state = state
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.state["player"].id:
+            await interaction.response.send_message("あなたのバトルじゃないよ！", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="⚔️ FIGHT", style=discord.ButtonStyle.danger)
+    async def fight(self, interaction: discord.Interaction, button):
+        state = self.state
+        atk = random.randint(3, 8)
+        state["enemy_hp"] = max(0, state["enemy_hp"] - atk)
+        if state["enemy_hp"] <= 0:
+            embed = build_ut_embed(state)
+            if state["enemy"].get("special"):
+                embed.description = f"* サンズを倒した。\n  「ふん…　まあ、よくやった…　ほんとうに…。」\n  zzz..."
+            else:
+                embed.description = f"* {state['enemy']['name']}を倒した。\n  ...なにかが、かわった。"
+            active_battles.pop(state["player"].id, None)
+            await interaction.response.edit_message(embed=embed, view=None)
+            return
+        state["msg_text"] = f"* {atk}のダメージを与えた！"
+        await _ut_enemy_attack(interaction, state)
+
+    @discord.ui.button(label="✨ ACT", style=discord.ButtonStyle.primary)
+    async def act(self, interaction: discord.Interaction, button):
+        embed = build_ut_embed(self.state)
+        embed.set_field_at(1, name="💬", value="* なにをする？", inline=False)
+        await interaction.response.edit_message(embed=embed, view=UtActView(self.state))
+
+    @discord.ui.button(label="🍫 ITEM", style=discord.ButtonStyle.success)
+    async def item(self, interaction: discord.Interaction, button):
+        state = self.state
+        if state["items"] <= 0:
+            state["msg_text"] = "* アイテムがない！"
+        else:
+            heal = 10
+            state["player_hp"] = min(state["player_max_hp"], state["player_hp"] + heal)
+            state["items"] -= 1
+            state["msg_text"] = f"* スパイシードッグを食べた。HP +{heal}！"
+        await _ut_enemy_attack(interaction, state)
+
+    @discord.ui.button(label="🏳️ MERCY", style=discord.ButtonStyle.secondary)
+    async def mercy(self, interaction: discord.Interaction, button):
+        state = self.state
+        if state["love"] >= 2:
+            embed = build_ut_embed(state)
+            embed.description = state["enemy"]["spare_line"]
+            active_battles.pop(state["player"].id, None)
+            await interaction.response.edit_message(embed=embed, view=None)
+        else:
+            remaining = 2 - state["love"]
+            state["msg_text"] = f"* まだ仲直りする気になっていない。\n  （ACTであと{remaining}回仲良くなろう）"
+            await _ut_enemy_attack(interaction, state)
+
+
+async def _ut_enemy_attack(interaction: discord.Interaction, state: dict):
+    enemy      = state["enemy"]
+    safe       = random.choice(["⬆️", "⬇️", "⬅️", "➡️"])
+    atk_line   = random.choice(enemy["attack_lines"])
+    dodge_view = UtDodgeView(state, safe)
+
+    embed = build_ut_embed(state)
+    embed.set_field_at(1, name="💬", value=f"{atk_line}\n\n**4秒で回避方向を選べ！**", inline=False)
+    await interaction.response.edit_message(embed=embed, view=dodge_view)
+    state["battle_msg"] = await interaction.original_response()
+
+
+@bot.command()
+async def battle(ctx):
+    """Undertale風バトルを開始する"""
+    uid = ctx.author.id
+    if uid in active_battles:
+        await ctx.send("❌ すでにバトル中だよ！`!endbattle` で終了できる。")
+        return
+
+    enemy = random.choice(UT_ENEMIES)
+    state = {
+        "player":        ctx.author,
+        "player_hp":     20,
+        "player_max_hp": 20,
+        "items":         2,
+        "enemy":         enemy,
+        "enemy_hp":      enemy["hp"],
+        "love":          0,
+        "msg_text":      f"* {enemy['name']}があらわれた！\n  {enemy['flavor']}",
+        "battle_msg":    None,
+    }
+    active_battles[uid] = state
+
+    embed = build_ut_embed(state)
+    msg = await ctx.send(embed=embed, view=UtMainView(state))
+    state["battle_msg"] = msg
+
+
+@bot.command()
+async def endbattle(ctx):
+    if ctx.author.id in active_battles:
+        active_battles.pop(ctx.author.id)
+        await ctx.send("* バトルを強制終了した。")
+    else:
+        await ctx.send("バトル中じゃないよ！")
+
+
+# ─────────────────────────────────────────────────────────────────
 
 bot.run(TOKEN)
