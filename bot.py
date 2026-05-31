@@ -668,6 +668,11 @@ async def usage(ctx):
         inline=False,
     )
     embed.add_field(
+        name="⚔️ チーム分け",
+        value="`!team @A @B @C @D ...` でメンションした人をランダムに2チームへ振り分け",
+        inline=False,
+    )
+    embed.add_field(
         name="🔥 煽り",
         value="`!roast @ユーザー` で指定した人を煽る",
         inline=False,
@@ -923,6 +928,34 @@ ROULETTES = [
     "🤐 1時間無言縛り",
     "🙇 全員に土下座しろ",
 ]
+
+
+@bot.command()
+async def team(ctx, *members: discord.Member):
+    if len(members) < 2:
+        await ctx.send("❌ 2人以上メンションしてね！例: `!team @A @B @C @D @E @F`")
+        return
+
+    shuffled = list(members)
+    random.shuffle(shuffled)
+    mid    = (len(shuffled) + 1) // 2
+    team_a = shuffled[:mid]
+    team_b = shuffled[mid:]
+
+    embed = discord.Embed(title="⚔️ チーム分け結果", color=discord.Color.blue())
+    embed.add_field(
+        name="🔴 チームA",
+        value="\n".join(f"・{m.display_name}" for m in team_a),
+        inline=True,
+    )
+    embed.add_field(
+        name="🔵 チームB",
+        value="\n".join(f"・{m.display_name}" for m in team_b),
+        inline=True,
+    )
+    if len(members) % 2 != 0:
+        embed.set_footer(text="人数が奇数のためチームAに1人多く振り分けました")
+    await ctx.send(embed=embed)
 
 
 @bot.command()
