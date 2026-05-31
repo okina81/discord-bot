@@ -506,6 +506,31 @@ async def build_ping_embed():
 
 # ─── パネル UI ───────────────────────────────────────────────────
 
+class TeamSelectView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=60)
+
+    @discord.ui.select(
+        cls=discord.ui.UserSelect,
+        placeholder="チーム分けするメンバーを選択（2人以上）",
+        min_values=2,
+        max_values=10,
+    )
+    async def select_members(self, interaction: discord.Interaction, select: discord.ui.UserSelect):
+        members = select.values
+        shuffled = list(members)
+        random.shuffle(shuffled)
+        mid    = (len(shuffled) + 1) // 2
+        team_a = shuffled[:mid]
+        team_b = shuffled[mid:]
+        embed  = discord.Embed(title="⚔️ チーム分け結果", color=discord.Color.blue())
+        embed.add_field(name="🔴 チームA", value="\n".join(f"・{m.display_name}" for m in team_a), inline=True)
+        embed.add_field(name="🔵 チームB", value="\n".join(f"・{m.display_name}" for m in team_b), inline=True)
+        if len(members) % 2 != 0:
+            embed.set_footer(text="人数が奇数のためチームAに1人多く振り分けました")
+        await interaction.response.send_message(embed=embed)
+
+
 class ApexStatsModal(discord.ui.Modal, title="👤 Apex プレイヤー統計"):
     username = discord.ui.TextInput(label="EA名", placeholder="プレイヤー名を入力", required=True)
     platform = discord.ui.TextInput(label="プラットフォーム（PC / PS4 / X1）", default="PC", required=False)
@@ -551,6 +576,12 @@ class PanelView(discord.ui.View):
         await interaction.response.send_modal(ApexStatsModal())
 
     # ── Row 1: 遊び系 ──────────────────────────────────────
+    @discord.ui.button(label="⚔️ チーム分け", style=discord.ButtonStyle.primary, row=1)
+    async def btn_team(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message(
+            "チーム分けするメンバーを選んでね！", view=TeamSelectView(), ephemeral=True
+        )
+
     @discord.ui.button(label="🎰 ルーレット", style=discord.ButtonStyle.danger, row=1)
     async def btn_roulette(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(thinking=True)
