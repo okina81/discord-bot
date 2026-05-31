@@ -1425,18 +1425,28 @@ UT_ENEMIES = [
     },
     {
         "name": "サンズ",
-        "hp": 1, "atk": 9,
+        "hp": 1, "atk": 12,
         "flavor": "zzz...",
         "acts": {
-            "みる":     (False, "* ATK ？？？  DEF ？？？\n  「いや、だいじょうぶ。」"),
-            "あくしゅ": (True,  "* サンズは手を振った。\n  最初から友達みたいだ。"),
+            "みる":       (False, "* ATK ？？？  DEF ？？？\n  「いや、だいじょうぶ。」"),
+            "うったえる": (False, "* サンズは聞いていない。\n  「よく　しゃべるな、おまえ。」"),
+            "あくしゅ":   (False, "* サンズは手を差し伸べた。\n  ……冷たかった。"),
         },
         "attack_lines": [
             "* サンズが骨を投げてきた！",
-            "* KARMA！",
+            "* 骨が追ってくる！　KARMA！",
             "* 「bad time だね。」",
-            "* サンズがGASTERBLASTERを放った！",
+            "* GASTERBLASTERが発射された！",
             "* 「おまえは、ほんとうに　あきらめないんだな。」",
+            "* 重力が反転した！",
+            "* 「そろそろ　あきらめてくれよ。」",
+        ],
+        "attack_lines_wave2": [
+            "* まだ続くぞ！",
+            "* 骨が追い打ちをかける！",
+            "* もう一発GASTERBLASTERだ！",
+            "* 「ほら、まだだ。」",
+            "* 反転した骨が来る！",
         ],
         "spare_line": "* サンズはニッと笑った。\n  「まあ、こうなることは　わかってたけど。」\n  そして消えた。",
         "special": True,
@@ -1452,21 +1462,38 @@ def ut_hp_bar(cur: int, max_: int, width: int = 10) -> str:
 
 
 def build_ut_embed(state: dict) -> discord.Embed:
-    enemy  = state["enemy"]
-    e_hp   = state["enemy_hp"]
-    e_max  = enemy["hp"]
-    p_hp   = state["player_hp"]
-    p_max  = state["player_max_hp"]
-    love   = state["love"]
+    enemy   = state["enemy"]
+    e_hp    = state["enemy_hp"]
+    e_max   = enemy["hp"]
+    p_hp    = state["player_hp"]
+    p_max   = state["player_max_hp"]
+    love    = state["love"]
     is_sans = enemy.get("special", False)
 
     color = discord.Color.from_rgb(0, 0, 0) if is_sans else discord.Color.dark_red()
     embed = discord.Embed(color=color)
-    embed.add_field(
-        name=f"👾 {enemy['name']}",
-        value=f"`{ut_hp_bar(e_hp, e_max)}` {e_hp}/{e_max} HP",
-        inline=False,
-    )
+
+    if is_sans:
+        tired = state.get("sans_tired", 0)
+        tired_labels = [
+            "zZZ...",
+            "少し汗をかいている...",
+            "かなり疲れてきた...",
+            "💤 眠そうだ...  **今がチャンス！**",
+        ]
+        tired_bar = "■" * tired + "□" * (3 - tired)
+        embed.add_field(
+            name="💀 サンズ",
+            value=f"HP: `？？？`\n疲労: `{tired_bar}` {tired_labels[tired]}",
+            inline=False,
+        )
+    else:
+        embed.add_field(
+            name=f"👾 {enemy['name']}",
+            value=f"`{ut_hp_bar(e_hp, e_max)}` {e_hp}/{e_max} HP",
+            inline=False,
+        )
+
     embed.add_field(
         name="💬",
         value=state.get("msg_text", f"* {enemy['name']}があらわれた！\n  {enemy['flavor']}"),
@@ -1519,10 +1546,11 @@ class UtActView(discord.ui.View):
 
 
 class UtDodgeView(discord.ui.View):
-    def __init__(self, state: dict, safe: str):
+    def __init__(self, state: dict, safe: str, wave: int = 1):
         super().__init__(timeout=4)
         self.state  = state
         self.safe   = safe
+        self.wave   = wave
         self.picked: str | None = None
         for d in ["⬆️", "⬇️", "⬅️", "➡️"]:
             btn = discord.ui.Button(label=d, style=discord.ButtonStyle.secondary)
@@ -1547,13 +1575,34 @@ class UtDodgeView(discord.ui.View):
         enemy  = state["enemy"]
         dodged = self.picked == self.safe
 
+        # サンズ第1波回避 → 第2波へ
+        if dodged and enemy.get("special") and self.wave == 1:
+            safe2  = random.choice(["⬆️", "⬇️", "⬅️", "➡️"])
+            atk2   = random.choice(enemy.get("attack_lines_wave2", enemy["attack_lines"]))
+            wave2  = UtDodgeView(state, safe2, wave=2)
+            embed  = build_ut_embed(state)
+            embed.set_field_at(1, name="💬", value=f"* 第1波を回避！\n{atk2}\n\n**4秒で回避！**", inline=False)
+            if interaction:
+                await interaction.response.edit_message(embed=embed, view=wave2)
+                state["battle_msg"] = await interaction.original_response()
+            else:
+                try:
+                    await state["battle_msg"].edit(embed=embed, view=wave2)
+                except Exception:
+                    pass
+            return
+
         if dodged:
             state["msg_text"] = "* うまく回避した！"
         else:
             dmg = enemy["atk"]
-            # サンズは追い打ち：外れるとKARMAも蓄積するフレーバー
-            if enemy.get("special") and not dodged:
-                state["msg_text"] = f"* KARMA！　{dmg}ダメージ！\n  「あきらめろよ。」"
+            if enemy.get("special"):
+                karma_msgs = [
+                    f"* KARMA！　{dmg}ダメージ！\n  「あきらめろよ。」",
+                    f"* 食らった！　{dmg}ダメージ！\n  「ははっ。」",
+                    f"* {dmg}ダメージ！\n  「まだまだ。」",
+                ]
+                state["msg_text"] = random.choice(karma_msgs)
             elif self.picked is None:
                 state["msg_text"] = f"* 回避できなかった！　{dmg}ダメージ！"
             else:
@@ -1595,19 +1644,40 @@ class UtMainView(discord.ui.View):
     @discord.ui.button(label="⚔️ FIGHT", style=discord.ButtonStyle.danger)
     async def fight(self, interaction: discord.Interaction, button):
         state = self.state
-        atk = random.randint(3, 8)
-        state["enemy_hp"] = max(0, state["enemy_hp"] - atk)
-        if state["enemy_hp"] <= 0:
-            embed = build_ut_embed(state)
-            if state["enemy"].get("special"):
-                embed.description = f"* サンズを倒した。\n  「ふん…　まあ、よくやった…　ほんとうに…。」\n  zzz..."
+        enemy = state["enemy"]
+
+        if enemy.get("special"):
+            fight_count = state.get("fight_count", 0) + 1
+            state["fight_count"] = fight_count
+            state["sans_tired"] = min(3, fight_count // 3)
+
+            if state["sans_tired"] >= 3:
+                embed = build_ut_embed(state)
+                embed.description = "* サンズを倒した。\n  「ふん…　まあ、よくやった…　ほんとうに…。」\n  zzz..."
+                active_battles.pop(state["player"].id, None)
+                await interaction.response.edit_message(embed=embed, view=None)
             else:
-                embed.description = f"* {state['enemy']['name']}を倒した。\n  ...なにかが、かわった。"
-            active_battles.pop(state["player"].id, None)
-            await interaction.response.edit_message(embed=embed, view=None)
-            return
-        state["msg_text"] = f"* {atk}のダメージを与えた！"
-        await _ut_enemy_attack(interaction, state)
+                dodge_msgs = [
+                    "* サンズは避けた。\n  「そうくると思ってた。」",
+                    "* ミスした！　サンズはにやりとした。",
+                    "* サンズは骨でガードした。",
+                    "* 攻撃が当たらない！\n  「heh。」",
+                    "* サンズが姿を消した。\n  「速すぎたか？」",
+                    "* 「まだそれくらいじゃ　当たらないよ。」",
+                ]
+                state["msg_text"] = random.choice(dodge_msgs)
+                await _ut_enemy_attack(interaction, state)
+        else:
+            atk = random.randint(3, 8)
+            state["enemy_hp"] = max(0, state["enemy_hp"] - atk)
+            if state["enemy_hp"] <= 0:
+                embed = build_ut_embed(state)
+                embed.description = f"* {enemy['name']}を倒した。\n  ...なにかが、かわった。"
+                active_battles.pop(state["player"].id, None)
+                await interaction.response.edit_message(embed=embed, view=None)
+                return
+            state["msg_text"] = f"* {atk}のダメージを与えた！"
+            await _ut_enemy_attack(interaction, state)
 
     @discord.ui.button(label="✨ ACT", style=discord.ButtonStyle.primary)
     async def act(self, interaction: discord.Interaction, button):
@@ -1630,9 +1700,23 @@ class UtMainView(discord.ui.View):
     @discord.ui.button(label="🏳️ MERCY", style=discord.ButtonStyle.secondary)
     async def mercy(self, interaction: discord.Interaction, button):
         state = self.state
-        if state["love"] >= 2:
+        enemy = state["enemy"]
+
+        if enemy.get("special"):
+            mercy_count = state.get("mercy_count", 0) + 1
+            state["mercy_count"] = mercy_count
+            mercy_msgs = [
+                "* サンズはMERCYを受け入れない。\n  「悪いけど、そうはいかない。」",
+                "* また？\n  「…まじめに　きいてるのか？」",
+                "* 「ははっ。　おまえ、　あきらめないんだな。」",
+                "* 「わかった。おれも　もう　すこし　がんばるよ。」",
+                "* サンズはあくびをした。\n  「もう　おわりにしようぜ。」",
+            ]
+            state["msg_text"] = mercy_msgs[min(mercy_count - 1, len(mercy_msgs) - 1)]
+            await _ut_enemy_attack(interaction, state)
+        elif state["love"] >= 2:
             embed = build_ut_embed(state)
-            embed.description = state["enemy"]["spare_line"]
+            embed.description = enemy["spare_line"]
             active_battles.pop(state["player"].id, None)
             await interaction.response.edit_message(embed=embed, view=None)
         else:
@@ -1642,10 +1726,14 @@ class UtMainView(discord.ui.View):
 
 
 async def _ut_enemy_attack(interaction: discord.Interaction, state: dict):
-    enemy      = state["enemy"]
-    safe       = random.choice(["⬆️", "⬇️", "⬅️", "➡️"])
-    atk_line   = random.choice(enemy["attack_lines"])
-    dodge_view = UtDodgeView(state, safe)
+    enemy    = state["enemy"]
+    safe     = random.choice(["⬆️", "⬇️", "⬅️", "➡️"])
+    atk_line = random.choice(enemy["attack_lines"])
+
+    if enemy.get("special"):
+        dodge_view = UtDodgeView(state, safe, wave=1)
+    else:
+        dodge_view = UtDodgeView(state, safe)
 
     embed = build_ut_embed(state)
     embed.set_field_at(1, name="💬", value=f"{atk_line}\n\n**4秒で回避方向を選べ！**", inline=False)
@@ -1654,23 +1742,31 @@ async def _ut_enemy_attack(interaction: discord.Interaction, state: dict):
 
 
 @bot.command()
-async def battle(ctx):
-    """Undertale風バトルを開始する"""
+async def battle(ctx, target: str = None):
+    """Undertale風バトルを開始する（!battle sans でサンズ戦）"""
     uid = ctx.author.id
     if uid in active_battles:
         await ctx.send("❌ すでにバトル中だよ！`!endbattle` で終了できる。")
         return
 
-    enemy = random.choice(UT_ENEMIES)
+    if target and target.lower() in ("sans", "サンズ"):
+        enemy = next(e for e in UT_ENEMIES if e.get("special"))
+    else:
+        enemy = random.choice(UT_ENEMIES)
+
+    is_sans      = enemy.get("special", False)
+    player_max   = 35 if is_sans else 20
+    items        = 3  if is_sans else 2
+    sans_intro   = "* 「よお。\n  いい　bad time　してるか？」"
     state = {
         "player":        ctx.author,
-        "player_hp":     20,
-        "player_max_hp": 20,
-        "items":         2,
+        "player_hp":     player_max,
+        "player_max_hp": player_max,
+        "items":         items,
         "enemy":         enemy,
         "enemy_hp":      enemy["hp"],
         "love":          0,
-        "msg_text":      f"* {enemy['name']}があらわれた！\n  {enemy['flavor']}",
+        "msg_text":      sans_intro if is_sans else f"* {enemy['name']}があらわれた！\n  {enemy['flavor']}",
         "battle_msg":    None,
     }
     active_battles[uid] = state
