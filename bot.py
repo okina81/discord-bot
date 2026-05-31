@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 import aiohttp
 import discord
-import google.generativeai as genai
+from google import genai as google_genai
 from discord.ext import commands
 from dotenv import load_dotenv
 from playwright.async_api import async_playwright
@@ -17,8 +17,7 @@ load_dotenv()
 TOKEN          = os.getenv("DISCORD_TOKEN")
 APEX_API_KEY   = os.getenv("APEX_API_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
+_gemini_client = google_genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -1095,10 +1094,9 @@ async def scan_messages(guild: discord.Guild, limit: int = 300) -> str:
 
 async def generate_ai_news(history: str, member_names: list[str]) -> str | None:
     """Gemini でメッセージ履歴から内輪ネタニュースを生成する"""
-    if not GEMINI_API_KEY:
+    if not _gemini_client:
         return None
     try:
-        model  = genai.GenerativeModel("gemini-1.5-flash")
         prompt = f"""以下のDiscordサーバーのチャット履歴を読んで、
 メンバーの口癖・内輪ネタ・よくあるパターンを分析し、
 面白いフィクションのゲームニュースを3本生成してください。
@@ -1114,7 +1112,11 @@ async def generate_ai_news(history: str, member_names: list[str]) -> str | None:
 - Apexや他ゲームのネタも歓迎
 - 3本を改行2つで区切って出力
 - 日本語のみ・説明文は不要"""
-        resp = await asyncio.to_thread(model.generate_content, prompt)
+        resp = await asyncio.to_thread(
+            _gemini_client.models.generate_content,
+            model="gemini-2.0-flash",
+            contents=prompt,
+        )
         return resp.text.strip()
     except Exception:
         return None
