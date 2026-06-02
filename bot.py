@@ -761,6 +761,11 @@ async def usage(ctx):
         inline=False,
     )
     embed.add_field(
+        name="🎨 絵文字作成",
+        value="`!emoji <名前> [画像URL]` でサーバーにカスタム絵文字を追加\n画像URLを省略した場合は画像ファイルを添付してね\n例: `!emoji kawaii https://example.com/image.png`",
+        inline=False,
+    )
+    embed.add_field(
         name="🎮 コントロールパネル",
         value="`!panel` でボタン式メニューを表示\nランクマップ・サーバー状態・ルーレットなどをワンタップで操作",
         inline=False,
@@ -1783,6 +1788,59 @@ async def endbattle(ctx):
         await ctx.send("* バトルを強制終了した。")
     else:
         await ctx.send("バトル中じゃないよ！")
+
+
+# ─── 絵文字作成 ──────────────────────────────────────────────────
+
+@bot.command()
+async def emoji(ctx, name: str = None, url: str = None):
+    """!emoji <名前> [画像URL] — サーバーにカスタム絵文字を追加する"""
+    if not ctx.guild.me.guild_permissions.manage_expressions:
+        await ctx.send("❌ Botに「絵文字の管理」権限がないよ！")
+        return
+
+    if name is None:
+        await ctx.send(
+            "❌ 使い方: `!emoji <名前> [画像URL]`\n"
+            "画像URLを省略した場合は画像ファイルを添付してね。\n"
+            "例: `!emoji kawaii https://example.com/image.png`"
+        )
+        return
+
+    # 名前のバリデーション（英数字とアンダーバーのみ、2文字以上）
+    if not re.fullmatch(r"[a-zA-Z0-9_]{2,32}", name):
+        await ctx.send("❌ 絵文字の名前は英数字・アンダーバーのみ、2〜32文字で指定してね。")
+        return
+
+    # 画像ソースの決定（URL優先、なければ添付ファイル）
+    image_url = url
+    if image_url is None:
+        if ctx.message.attachments:
+            image_url = ctx.message.attachments[0].url
+        else:
+            await ctx.send("❌ 画像URLか画像ファイルを添付してね。")
+            return
+
+    msg = await ctx.send("🎨 絵文字を作成中...")
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(image_url) as resp:
+                if resp.status != 200:
+                    await msg.edit(content=f"❌ 画像の取得に失敗したよ（HTTP {resp.status}）")
+                    return
+                image_data = await resp.read()
+
+        new_emoji = await ctx.guild.create_custom_emoji(name=name, image=image_data)
+        await msg.edit(content=f"✅ 絵文字 {new_emoji} `:{ name}:` を追加したよ！")
+    except discord.HTTPException as e:
+        if e.code == 30008:
+            await msg.edit(content="❌ サーバーの絵文字スロットが満杯だよ！")
+        elif e.code == 50138:
+            await msg.edit(content="❌ 画像サイズが大きすぎるよ（256KB以下にしてね）")
+        else:
+            await msg.edit(content=f"❌ 絵文字の作成に失敗したよ: {e.text}")
+    except Exception as e:
+        await msg.edit(content=f"❌ エラーが発生したよ: {e}")
 
 
 # ─────────────────────────────────────────────────────────────────
