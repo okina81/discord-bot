@@ -702,7 +702,7 @@ async def usage(ctx):
     )
     embed.add_field(
         name="⏱️ タイマー",
-        value="`!timer 10m` `!timer 1h30m` `!timer 30s`\n`!timer 15時から` `!timer 15時30分から` など\n時間になったらメンションで呼び出す",
+        value="`!timer 10m` `!timer 1h30m` `!timer 30s` など\n指定した時間後にメンションで呼び出す（最大3時間）",
         inline=False,
     )
     embed.add_field(
@@ -752,7 +752,7 @@ async def usage(ctx):
     )
     embed.add_field(
         name="🎮 Undertaleバトル",
-        value="`!battle` でランダムな敵とバトル開始\nFIGHT/ACT/ITEM/MERCY＋ドッジ回避あり　`!endbattle` で強制終了",
+        value="`!battle` でランダムな敵とバトル開始　`!battle sans` でサンズ戦\nFIGHT/ACT/ITEM/MERCY＋ドッジ回避あり　`!endbattle` で強制終了",
         inline=False,
     )
     embed.add_field(
@@ -767,7 +767,7 @@ async def usage(ctx):
     )
     embed.add_field(
         name="🎮 コントロールパネル",
-        value="`!panel` でボタン式メニューを表示\nランクマップ・サーバー状態・ルーレットなどをワンタップで操作",
+        value="`!panel` でボタン式メニューを表示\nランクマップ・サーバー状態・Apex統計・チーム分け・ルーレット・マック・サーバー統計・回線速度・フェイクニュースをワンタップで操作",
         inline=False,
     )
     embed.set_footer(text="このチャンネル専用Bot")
