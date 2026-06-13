@@ -737,7 +737,7 @@ async def usage(ctx):
     )
     embed.add_field(
         name="🎰 罰ゲームルーレット",
-        value="`!roulette` でランダムに罰ゲームを決定\n※特定ユーザーは必ずおごり確定",
+        value="`!roulette` でランダムに罰ゲームを決定\n`!roulette @ユーザー` で指定したユーザーにルーレットを実行",
         inline=False,
     )
     embed.add_field(
@@ -1189,14 +1189,15 @@ async def roast(ctx, member: discord.Member):
 
 
 @bot.command()
-async def roulette(ctx):
+async def roulette(ctx, member: discord.Member = None):
+    target = member or ctx.author
     msg = await ctx.send("🎰 ルーレット回転中...")
     await asyncio.sleep(2)
-    if ctx.author.id in TARGET_USER_IDS:
+    if target.id in TARGET_USER_IDS:
         result = "🍺 次の集まりで全員分おごり確定！"
     else:
         result = random.choice(ROULETTES)
-    await msg.edit(content=f"🎰 **結果発表！** {ctx.author.mention}\n{result}")
+    await msg.edit(content=f"🎰 **結果発表！** {target.mention}\n{result}")
 
 
 @bot.command()
