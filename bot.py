@@ -760,7 +760,7 @@ async def usage(ctx):
     )
     embed.add_field(
         name="🤣 ミーム",
-        value="`!meme` で今話題のミームをランダム表示",
+        value="`!meme` でニコニコ静画の時間別ランキングから日本で話題のミームをランダム表示",
         inline=False,
     )
     embed.add_field(
@@ -1111,40 +1111,51 @@ async def news(ctx):
     await ctx.send(embed=embed)
 
 
-MEME_SUBREDDITS = ["memes", "dankmemes"]
+async def fetch_nicovideo_memes():
+    """ニコニコ静画の時間別ランキングから画像タイトルとサムネURLを取得する"""
+    results = []
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        page = await browser.new_page()
+        await page.goto("https://seiga.nicovideo.jp/ranking/image?target=hourly", wait_until="networkidle")
+        items = await page.eval_on_selector_all(
+            ".list_item",
+            """els => els.map(el => {
+                const a    = el.querySelector("a.lazy_load");
+                const img  = el.querySelector("img.lazy_image, img");
+                const title = el.querySelector(".title");
+                const thumb = img ? (img.dataset.src || img.src) : null;
+                return {
+                    title: title ? title.innerText.trim() : "",
+                    thumb: thumb,
+                    url:   a ? "https://seiga.nicovideo.jp" + a.getAttribute("href") : null,
+                };
+            })"""
+        )
+        await browser.close()
+    return [i for i in items if i["thumb"] and i["title"] and i["url"]]
+
 
 @bot.command()
 async def meme(ctx):
-    sub = random.choice(MEME_SUBREDDITS)
-    url = f"https://www.reddit.com/r/{sub}/hot.json?limit=30"
-    headers = {"User-Agent": "discord-meme-bot/1.0"}
+    msg = await ctx.send("🎌 日本で話題のミームを探してるよ...")
     try:
-        async with aiohttp.ClientSession(headers=headers) as session:
-            async with session.get(url) as resp:
-                if resp.status != 200:
-                    await ctx.send("❌ ミームの取得に失敗したよ")
-                    return
-                data = await resp.json()
-        posts = [
-            p["data"] for p in data["data"]["children"]
-            if p["data"].get("url", "").endswith((".jpg", ".jpeg", ".png", ".gif", ".webp"))
-            and not p["data"].get("over_18", False)
-            and not p["data"].get("stickied", False)
-        ]
-        if not posts:
-            await ctx.send("❌ ミームが見つからなかったよ")
+        items = await fetch_nicovideo_memes()
+        if not items:
+            await msg.edit(content="❌ ミームが見つからなかったよ")
             return
-        post = random.choice(posts)
+        item = random.choice(items[:20])
         embed = discord.Embed(
-            title=post["title"],
-            url=f"https://reddit.com{post['permalink']}",
-            color=discord.Color.orange(),
+            title=item["title"],
+            url=item["url"],
+            color=discord.Color.red(),
         )
-        embed.set_image(url=post["url"])
-        embed.set_footer(text=f"👍 {post['ups']:,}  |  r/{sub}")
+        embed.set_image(url=item["thumb"])
+        embed.set_footer(text="出典: ニコニコ静画 時間別ランキング")
+        await msg.delete()
         await ctx.send(embed=embed)
     except Exception as e:
-        await ctx.send(f"❌ エラーが発生したよ: {e}")
+        await msg.edit(content=f"❌ エラーが発生したよ: {e}")
 
 
 @bot.command()
