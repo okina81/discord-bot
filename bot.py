@@ -489,15 +489,43 @@ async def build_ping_embed():
             await r.read()
         upload = len(payload) * 8 / (time.monotonic() - t0) / 1_000_000
     if download >= 500:
-        comment = random.choice(["⚡ 化け物回線すぎて草","⚡ 何に使うんその速度","⚡ お前のうち通信会社か？","⚡ 1GB一瞬で落とせるやんけ","⚡ もはや回線じゃなくて光そのもの"])
+        comment = random.choice([
+            "⚡ 化け物回線すぎて草",
+            "⚡ 何に使うんその速度",
+            "⚡ お前のうち通信会社か？",
+            "⚡ もはや回線じゃなくて光そのもの",
+        ])
     elif download >= 100:
-        comment = random.choice(["🚀 はや！光回線の申し子か","🚀 こんな速度出る？天才か","🚀 ギガ死ぬやろｗ","🚀 どんな回線やねん","🚀 Botもびびってる"])
+        comment = random.choice([
+            "🚀 はや！光回線の申し子か",
+            "🚀 こんな速度出る？天才か",
+            "🚀 どんな回線やねん",
+            "🚀 Botもびびってる",
+        ])
     elif download >= 30:
-        comment = random.choice(["🟢 普通に快適やん","🟢 まあ文句なし","🟢 ゲームも動画も余裕やな","🟢 悪くないやん","🟢 これで不満なら欲張りすぎ"])
+        comment = random.choice([
+            "🟢 普通に快適やん",
+            "🟢 まあ文句なし",
+            "🟢 ゲームも動画も余裕やな",
+            "🟢 悪くないやん",
+            "🟢 これで不満なら欲張りすぎ",
+        ])
     elif download >= 10:
-        comment = random.choice(["🟡 まあギリ許せる速度","🟡 ラグったらルーター叩け","🟡 動画たまに止まりそう","🟡 ゲームはちょっと不安やな","🟡 Wi-Fi近づけたら？"])
+        comment = random.choice([
+            "🟡 まあギリ許せる速度",
+            "🟡 ラグったらルーター叩け",
+            "🟡 動画たまに止まりそう",
+            "🟡 ゲームはちょっと不安やな",
+            "🟡 Wi-Fi近づけたら？",
+        ])
     else:
-        comment = random.choice(["🔴 回線ゴミすぎｗ Wi-Fi近づけろ","🔴 それ回線？砂時計？","🔴 ダイヤルアップかよ","🔴 光回線解約したん？","🔴 ポケットWi-Fiの電波1本やろこれ"])
+        comment = random.choice([
+            "🔴 回線ゴミすぎｗ Wi-Fi近づけろ",
+            "🔴 それ回線？砂時計？",
+            "🔴 ダイヤルアップかよ",
+            "🔴 光回線解約したん？",
+            "🔴 ポケットWi-Fiの電波1本やろこれ",
+        ])
     embed = discord.Embed(title="🌐 通信速度テスト結果", color=discord.Color.blue())
     embed.add_field(name="📥 ダウンロード", value=f"{download:.1f} Mbps", inline=True)
     embed.add_field(name="📤 アップロード", value=f"{upload:.1f} Mbps",   inline=True)
@@ -825,46 +853,10 @@ async def rankmap(ctx):
     if not APEX_API_KEY:
         await ctx.send("❌ APEX_API_KEY が設定されていないよ！")
         return
-
-    async with aiohttp.ClientSession() as session:
-        url = f"https://api.mozambiquehe.re/maprotation?auth={APEX_API_KEY}&version=2"
-        try:
-            async with session.get(url) as resp:
-                if resp.status != 200:
-                    await ctx.send(f"❌ API エラー: {resp.status}")
-                    return
-                data = await resp.json(content_type=None)
-        except Exception as e:
-            await ctx.send(f"❌ 取得に失敗したよ: {e}")
-            return
-
-    ranked = data.get("ranked", {})
-    current = ranked.get("current", {})
-    nxt     = ranked.get("next", {})
-
-    cur_map  = current.get("map", "不明")
-    cur_map  = APEX_MAP_JA.get(cur_map, cur_map)
-    nxt_map  = nxt.get("map", "不明")
-    nxt_map  = APEX_MAP_JA.get(nxt_map, nxt_map)
-
-    remaining_sec  = current.get("remainingSecs", 0)
-    remaining_min  = remaining_sec // 60
-    remaining_h    = remaining_min // 60
-    remaining_m    = remaining_min % 60
-    if remaining_h:
-        remain_str = f"{remaining_h}時間{remaining_m}分"
-    else:
-        remain_str = f"{remaining_m}分"
-
-    embed = discord.Embed(
-        title="🗺️ Apex ランクマッチ 現在のマップ",
-        color=discord.Color.dark_red(),
-    )
-    embed.add_field(name="🔴 現在", value=f"**{cur_map}**", inline=True)
-    embed.add_field(name="⏱️ 残り時間", value=remain_str, inline=True)
-    embed.add_field(name="⏭️ 次のマップ", value=nxt_map, inline=True)
-    embed.set_footer(text="出典: Apex Legends Status API")
-    await ctx.send(embed=embed)
+    try:
+        await ctx.send(embed=await build_rankmap_embed())
+    except Exception as e:
+        await ctx.send(f"❌ 取得に失敗したよ: {e}")
 
 
 RANK_EMOJI = {
@@ -883,95 +875,28 @@ PLATFORM_ALIAS = {"pc": "PC", "ps4": "PS4", "ps": "PS4", "xbox": "X1", "x1": "X1
 
 @bot.command()
 async def apexstats(ctx, username: str, platform: str = "PC"):
-    """!apexstats <EA名> [PC/PS4/X1]"""
     if not APEX_API_KEY:
         await ctx.send("❌ APEX_API_KEY が設定されていないよ！")
         return
-
-    platform = PLATFORM_ALIAS.get(platform.lower(), "PC")
-    url = f"https://api.mozambiquehe.re/bridge?auth={APEX_API_KEY}&player={username}&platform={platform}"
-
-    async with aiohttp.ClientSession() as session:
-        try:
-            async with session.get(url) as resp:
-                data = await resp.json(content_type=None)
-        except Exception as e:
-            await ctx.send(f"❌ 取得に失敗したよ: {e}")
-            return
-
-    if "Error" in data:
-        await ctx.send(f"❌ プレイヤーが見つからなかったよ（EA名とプラットフォームを確認してね）")
-        return
-
-    g        = data.get("global", {})
-    rank     = g.get("rank", {})
-    realtime = data.get("realtime", {})
-
-    rank_name  = rank.get("rankName", "不明")
-    rank_div   = rank.get("rankDiv", 0)
-    rank_rp    = rank.get("rankScore", 0)
-    rank_emoji = RANK_EMOJI.get(rank_name, "🎮")
-    div_label  = ["IV", "III", "II", "I"][rank_div - 1] if 1 <= rank_div <= 4 else ""
-    rank_str   = f"{rank_name} {div_label}".strip() if div_label else rank_name
-
-    level     = g.get("level", "?")
-    level_pct = g.get("toNextLevelPercent", 0)
-
-    if realtime.get("isInGame"):
-        state = "🟢 ゲーム中"
-    elif realtime.get("isOnline"):
-        state = "🟡 オンライン"
-    else:
-        state = "⚫ オフライン"
-
-    legend = realtime.get("selectedLegend", "")
-
-    embed = discord.Embed(
-        title=f"🎮 {g.get('name', username)} の統計",
-        color=discord.Color.dark_red(),
-    )
-    embed.add_field(name="📊 レベル",          value=f"Lv.{level}（{level_pct}%）", inline=True)
-    embed.add_field(name=f"{rank_emoji} ランク", value=f"{rank_str}\n{rank_rp:,} RP",  inline=True)
-    embed.add_field(name="🔵 状態",             value=state,                           inline=True)
-    if legend:
-        embed.add_field(name="🦸 選択レジェンド", value=legend, inline=True)
-    embed.set_footer(text=f"Platform: {platform} | 出典: Apex Legends Status API")
-    await ctx.send(embed=embed)
+    try:
+        embed = await build_apexstats_embed(username, platform)
+        if embed is None:
+            await ctx.send("❌ プレイヤーが見つからなかったよ（EA名とプラットフォームを確認してね）")
+        else:
+            await ctx.send(embed=embed)
+    except Exception as e:
+        await ctx.send(f"❌ 取得に失敗したよ: {e}")
 
 
 @bot.command()
 async def apexstatus(ctx):
-    """Apex サーバーの稼働状態を確認"""
     if not APEX_API_KEY:
         await ctx.send("❌ APEX_API_KEY が設定されていないよ！")
         return
-
-    url = f"https://api.mozambiquehe.re/servers?auth={APEX_API_KEY}"
-    async with aiohttp.ClientSession() as session:
-        try:
-            async with session.get(url) as resp:
-                data = await resp.json(content_type=None)
-        except Exception as e:
-            await ctx.send(f"❌ 取得に失敗したよ: {e}")
-            return
-
-    embed = discord.Embed(title="🖥️ Apex Legends サーバー状態（PC）", color=discord.Color.dark_red())
-
-    for key, label in PC_SERVICES.items():
-        regions = data.get(key, {})
-        if not isinstance(regions, dict):
-            continue
-        lines = [
-            f"{'🟢' if v.get('Status') == 'UP' else '🔴'} {AWS_REGION_LABEL.get(k, k)}　{v.get('ResponseTime', '?')}ms"
-            for k, v in regions.items() if isinstance(v, dict)
-        ]
-        all_up = all(v.get("Status") == "UP" for v in regions.values() if isinstance(v, dict))
-        any_up = any(v.get("Status") == "UP" for v in regions.values() if isinstance(v, dict))
-        icon   = "🟢" if all_up else ("🟡" if any_up else "🔴")
-        embed.add_field(name=f"{icon} {label}", value="\n".join(lines) or "データなし", inline=False)
-
-    embed.set_footer(text="出典: Apex Legends Status API | AWS移行 2025年4月")
-    await ctx.send(embed=embed)
+    try:
+        await ctx.send(embed=await build_apexstatus_embed())
+    except Exception as e:
+        await ctx.send(f"❌ 取得に失敗したよ: {e}")
 
 
 ROASTS = [
@@ -1087,7 +1012,6 @@ def fill_template(template: str, members: list) -> str:
     return result
 
 
-@bot.command()
 async def scan_messages(guild: discord.Guild, limit: int = 100) -> str:
     """サーバー内の全テキストチャンネルの直近メッセージを時系列テキストで返す"""
     lines = []
@@ -1204,71 +1128,7 @@ async def roulette(ctx, member: discord.Member = None):
 async def ping(ctx):
     msg = await ctx.send("🌐 通信速度を測定中... しばらく待ってね（10〜20秒かかるよ）")
     try:
-        async with aiohttp.ClientSession() as session:
-            # Ping（Cloudflare への往復時間）
-            t0 = time.monotonic()
-            async with session.get("https://speed.cloudflare.com/__down?bytes=0") as r:
-                await r.read()
-            ping_ms = (time.monotonic() - t0) * 1000
-
-            # ダウンロード（25MB）
-            t0 = time.monotonic()
-            async with session.get("https://speed.cloudflare.com/__down?bytes=25000000") as r:
-                dl_data = await r.read()
-            download = len(dl_data) * 8 / (time.monotonic() - t0) / 1_000_000
-
-            # アップロード（10MB）
-            payload = b"x" * 10_000_000
-            t0 = time.monotonic()
-            async with session.post("https://speed.cloudflare.com/__up", data=payload) as r:
-                await r.read()
-            upload = len(payload) * 8 / (time.monotonic() - t0) / 1_000_000
-
-        if download >= 500:
-            comment = random.choice([
-                "⚡ 化け物回線すぎて草",
-                "⚡ 何に使うんその速度",
-                "⚡ お前のうち通信会社か？",
-                "⚡ もはや回線じゃなくて光そのもの",
-            ])
-        elif download >= 100:
-            comment = random.choice([
-                "🚀 はや！光回線の申し子か",
-                "🚀 こんな速度出る？天才か",
-                "🚀 どんな回線やねん",
-                "🚀 Botもびびってる",
-            ])
-        elif download >= 30:
-            comment = random.choice([
-                "🟢 普通に快適やん",
-                "🟢 まあ文句なし",
-                "🟢 ゲームも動画も余裕やな",
-                "🟢 悪くないやん",
-                "🟢 これで不満なら欲張りすぎ",
-            ])
-        elif download >= 10:
-            comment = random.choice([
-                "🟡 まあギリ許せる速度",
-                "🟡 ラグったらルーター叩け",
-                "🟡 動画たまに止まりそう",
-                "🟡 ゲームはちょっと不安やな",
-                "🟡 Wi-Fi近づけたら？",
-            ])
-        else:
-            comment = random.choice([
-                "🔴 回線ゴミすぎｗ Wi-Fi近づけろ",
-                "🔴 それ回線？砂時計？",
-                "🔴 ダイヤルアップかよ",
-                "🔴 光回線解約したん？",
-                "🔴 ポケットWi-Fiの電波1本やろこれ",
-            ])
-
-        embed = discord.Embed(title="🌐 通信速度テスト結果", color=discord.Color.blue())
-        embed.add_field(name="📥 ダウンロード", value=f"{download:.1f} Mbps", inline=True)
-        embed.add_field(name="📤 アップロード", value=f"{upload:.1f} Mbps",   inline=True)
-        embed.add_field(name="🏓 Ping",         value=f"{ping_ms:.1f} ms",    inline=True)
-        embed.add_field(name="一言",             value=comment,                inline=False)
-        embed.set_footer(text="※ Botが動いているマシンの回線速度です")
+        embed = await build_ping_embed()
         await msg.delete()
         await ctx.send(embed=embed)
     except Exception as e:
