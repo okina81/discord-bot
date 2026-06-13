@@ -759,6 +759,11 @@ async def usage(ctx):
         inline=False,
     )
     embed.add_field(
+        name="🤣 ミーム",
+        value="`!meme` で今話題のミームをランダム表示",
+        inline=False,
+    )
+    embed.add_field(
         name="🔥 煽り",
         value="`!roast @ユーザー` で指定した人を煽る",
         inline=False,
@@ -1104,6 +1109,42 @@ async def news(ctx):
 
     await msg.delete()
     await ctx.send(embed=embed)
+
+
+MEME_SUBREDDITS = ["memes", "dankmemes"]
+
+@bot.command()
+async def meme(ctx):
+    sub = random.choice(MEME_SUBREDDITS)
+    url = f"https://www.reddit.com/r/{sub}/hot.json?limit=30"
+    headers = {"User-Agent": "discord-meme-bot/1.0"}
+    try:
+        async with aiohttp.ClientSession(headers=headers) as session:
+            async with session.get(url) as resp:
+                if resp.status != 200:
+                    await ctx.send("❌ ミームの取得に失敗したよ")
+                    return
+                data = await resp.json()
+        posts = [
+            p["data"] for p in data["data"]["children"]
+            if p["data"].get("url", "").endswith((".jpg", ".jpeg", ".png", ".gif", ".webp"))
+            and not p["data"].get("over_18", False)
+            and not p["data"].get("stickied", False)
+        ]
+        if not posts:
+            await ctx.send("❌ ミームが見つからなかったよ")
+            return
+        post = random.choice(posts)
+        embed = discord.Embed(
+            title=post["title"],
+            url=f"https://reddit.com{post['permalink']}",
+            color=discord.Color.orange(),
+        )
+        embed.set_image(url=post["url"])
+        embed.set_footer(text=f"👍 {post['ups']:,}  |  r/{sub}")
+        await ctx.send(embed=embed)
+    except Exception as e:
+        await ctx.send(f"❌ エラーが発生したよ: {e}")
 
 
 @bot.command()
