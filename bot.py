@@ -760,7 +760,7 @@ async def usage(ctx):
     )
     embed.add_field(
         name="🤣 ミーム",
-        value="`!meme` でニコニコ静画の時間別ランキングから日本で話題のミームをランダム表示",
+        value="`!meme` でピクシブ百科事典のTwitter発ネタ一覧からランダムにミームを表示（過去ネタ含む）",
         inline=False,
     )
     embed.add_field(
@@ -1111,47 +1111,58 @@ async def news(ctx):
     await ctx.send(embed=embed)
 
 
-async def fetch_nicovideo_memes():
-    """ニコニコ静画の時間別ランキングから画像タイトルとサムネURLを取得する"""
-    results = []
+PIXIV_MEME_LIST_URL = "https://dic.pixiv.net/a/Twitter%E7%99%BA%E3%81%AE%E3%83%8D%E3%82%BF%E3%81%AE%E4%B8%80%E8%A6%A7"
+
+async def fetch_pixiv_meme():
+    """ピクシブ百科事典のTwitter発ネタ一覧からランダムにミームを取得する"""
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         page = await browser.new_page()
-        await page.goto("https://seiga.nicovideo.jp/ranking/image?target=hourly", wait_until="networkidle")
-        items = await page.eval_on_selector_all(
-            ".list_item",
-            """els => els.map(el => {
-                const a    = el.querySelector("a.lazy_load");
-                const img  = el.querySelector("img.lazy_image, img");
-                const title = el.querySelector(".title");
-                const thumb = img ? (img.dataset.src || img.src) : null;
-                return {
-                    title: title ? title.innerText.trim() : "",
-                    thumb: thumb,
-                    url:   a ? "https://seiga.nicovideo.jp" + a.getAttribute("href") : null,
-                };
-            })"""
+
+        await page.goto(PIXIV_MEME_LIST_URL, wait_until="networkidle")
+        links = await page.eval_on_selector_all(
+            "article a[href*='/a/']",
+            "els => els.map(el => ({name: el.innerText.trim(), url: el.href}))"
+            ".filter(x => x.name.length > 1 && !x.url.includes('?'))"
         )
+        if not links:
+            await browser.close()
+            return None
+
+        chosen = random.choice(links)
+        await page.goto(chosen["url"], wait_until="networkidle")
+
+        # タイトル
+        h1 = await page.query_selector("h1")
+        title = (await h1.inner_text()).strip() if h1 else chosen["name"]
+
+        # 概要（最初の非空段落）
+        desc = ""
+        for el in await page.query_selector_all("article p"):
+            text = (await el.inner_text()).strip()
+            if text:
+                desc = text[:250]
+                break
+
         await browser.close()
-    return [i for i in items if i["thumb"] and i["title"] and i["url"]]
+        return {"name": chosen["name"], "url": chosen["url"], "title": title, "desc": desc}
 
 
 @bot.command()
 async def meme(ctx):
-    msg = await ctx.send("🎌 日本で話題のミームを探してるよ...")
+    msg = await ctx.send("🎌 日本で話題のミームを調べてるよ...")
     try:
-        items = await fetch_nicovideo_memes()
-        if not items:
+        item = await fetch_pixiv_meme()
+        if not item:
             await msg.edit(content="❌ ミームが見つからなかったよ")
             return
-        item = random.choice(items[:20])
         embed = discord.Embed(
-            title=item["title"],
+            title=item["name"],
             url=item["url"],
-            color=discord.Color.red(),
+            description=item["desc"] or None,
+            color=discord.Color.blue(),
         )
-        embed.set_image(url=item["thumb"])
-        embed.set_footer(text="出典: ニコニコ静画 時間別ランキング")
+        embed.set_footer(text="出典: ピクシブ百科事典 (Twitter発のネタ一覧)")
         await msg.delete()
         await ctx.send(embed=embed)
     except Exception as e:
