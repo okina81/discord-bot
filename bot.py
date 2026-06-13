@@ -6,6 +6,7 @@ import asyncio
 import datetime
 import time
 from pathlib import Path
+from urllib.parse import quote
 import aiohttp
 import discord
 from google import genai as google_genai
@@ -1106,59 +1107,46 @@ async def news(ctx):
     await ctx.send(embed=embed)
 
 
-PIXIV_MEME_LIST_URL = "https://dic.pixiv.net/a/Twitter%E7%99%BA%E3%81%AE%E3%83%8D%E3%82%BF%E3%81%AE%E4%B8%80%E8%A6%A7"
-_PIXIV_HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-
-async def fetch_pixiv_meme():
-    """ピクシブ百科事典のTwitter発ネタ一覧からランダムにミームを取得する"""
-    async with aiohttp.ClientSession(headers=_PIXIV_HEADERS) as session:
-        async with session.get(PIXIV_MEME_LIST_URL, timeout=aiohttp.ClientTimeout(total=15)) as resp:
-            html = await resp.text()
-
-    # 記事本文内の /a/ リンクを抽出（ナビゲーション等を除外するため名前が2文字以上のもの）
-    paths = re.findall(r'href="(/a/[^"?#]+)"[^>]*>([^<]{2,})</a>', html)
-    memes = [(name.strip(), "https://dic.pixiv.net" + path)
-             for path, name in paths if name.strip()]
-    if not memes:
-        return None
-
-    name, url = random.choice(memes)
-
-    # 個別ページから概要を取得
-    async with aiohttp.ClientSession(headers=_PIXIV_HEADERS) as session:
-        async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
-            detail = await resp.text()
-
-    # 最初の意味のある <p> テキストを取得
-    desc = ""
-    for m in re.finditer(r'<p[^>]*>([\s\S]*?)</p>', detail):
-        text = re.sub(r'<[^>]+>', '', m.group(1)).strip()
-        if len(text) > 10:
-            desc = text[:250]
-            break
-
-    return {"name": name, "url": url, "desc": desc}
+JP_MEMES = [
+    # 2009-2011
+    "ヒウィッヒヒー", "よるほー", "クッキー☆", "ハッキョーセット", "強いられているんだ!",
+    # 2012-2013
+    "激おこぷんぷん丸", "マカンコウサッポウ", "鼻カルボ", "バカッター", "下ネタ四天王",
+    "ケツドライヤー猫", "なめこ栽培キット", "トモダチコレクション新生活",
+    # 2014-2015
+    "童貞を殺す服", "大丈夫?おっぱい揉む?", "例のセーラー服", "特別な気分",
+    # 2016-2018
+    "5000兆円欲しい!", "自己防衛おじさん", "クッパ姫", "大迫半端ないって",
+    "魔女集会で会いましょう", "バーチャルYouTuber", "キズナアイ",
+    # 2019-2020
+    "100日後に死ぬワニ", "GetWild退勤", "テーマパークに来たみたいだぜ",
+    "ちいかわ", "鬼滅の刃", "あつまれどうぶつの森",
+    # 2021-2024
+    "うっせぇわ", "おじさん構文", "パリピ孔明", "ぼっち・ざ・ろっく!",
+    "推しの子", "葬送のフリーレン", "ふてにゃん", "でこぴん",
+    "石丸構文", "ゆっくりしていってね", "論破",
+]
 
 
 @bot.command()
 async def meme(ctx):
-    msg = await ctx.send("🎌 日本のミームを調べてるよ...")
-    try:
-        item = await fetch_pixiv_meme()
-        if not item:
-            await msg.edit(content="❌ ミームが見つからなかったよ")
-            return
-        embed = discord.Embed(
-            title=item["name"],
-            url=item["url"],
-            description=item["desc"] or None,
-            color=discord.Color.blue(),
-        )
-        embed.set_footer(text="出典: ピクシブ百科事典 (Twitter発のネタ一覧)")
-        await msg.delete()
-        await ctx.send(embed=embed)
-    except Exception as e:
-        await msg.edit(content=f"❌ エラーが発生したよ: {e}")
+    name = random.choice(JP_MEMES)
+    url  = f"https://dic.pixiv.net/a/{quote(name, safe='')}"
+    embed = discord.Embed(title=name, url=url, color=discord.Color.blue())
+
+    if _gemini_client:
+        try:
+            resp = await asyncio.to_thread(
+                _gemini_client.models.generate_content,
+                model="gemini-2.5-flash-lite",
+                contents=f"「{name}」という日本のTwitter/Xのミーム・ネタを1〜2文でカジュアルに説明してください。",
+            )
+            embed.description = resp.text.strip()
+        except Exception:
+            pass
+
+    embed.set_footer(text="出典: ピクシブ百科事典 (Twitter発のネタ一覧)")
+    await ctx.send(embed=embed)
 
 
 @bot.command()
