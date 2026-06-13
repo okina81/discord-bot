@@ -1112,45 +1112,42 @@ async def news(ctx):
 
 
 PIXIV_MEME_LIST_URL = "https://dic.pixiv.net/a/Twitter%E7%99%BA%E3%81%AE%E3%83%8D%E3%82%BF%E3%81%AE%E4%B8%80%E8%A6%A7"
+_PIXIV_HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
 
 async def fetch_pixiv_meme():
     """ピクシブ百科事典のTwitter発ネタ一覧からランダムにミームを取得する"""
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
-        page = await browser.new_page()
+    async with aiohttp.ClientSession(headers=_PIXIV_HEADERS) as session:
+        async with session.get(PIXIV_MEME_LIST_URL, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+            html = await resp.text()
 
-        await page.goto(PIXIV_MEME_LIST_URL, wait_until="networkidle")
-        links = await page.eval_on_selector_all(
-            "article a[href*='/a/']",
-            "els => els.map(el => ({name: el.innerText.trim(), url: el.href}))"
-            ".filter(x => x.name.length > 1 && !x.url.includes('?'))"
-        )
-        if not links:
-            await browser.close()
-            return None
+    # 記事本文内の /a/ リンクを抽出（ナビゲーション等を除外するため名前が2文字以上のもの）
+    paths = re.findall(r'href="(/a/[^"?#]+)"[^>]*>([^<]{2,})</a>', html)
+    memes = [(name.strip(), "https://dic.pixiv.net" + path)
+             for path, name in paths if name.strip()]
+    if not memes:
+        return None
 
-        chosen = random.choice(links)
-        await page.goto(chosen["url"], wait_until="networkidle")
+    name, url = random.choice(memes)
 
-        # タイトル
-        h1 = await page.query_selector("h1")
-        title = (await h1.inner_text()).strip() if h1 else chosen["name"]
+    # 個別ページから概要を取得
+    async with aiohttp.ClientSession(headers=_PIXIV_HEADERS) as session:
+        async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+            detail = await resp.text()
 
-        # 概要（最初の非空段落）
-        desc = ""
-        for el in await page.query_selector_all("article p"):
-            text = (await el.inner_text()).strip()
-            if text:
-                desc = text[:250]
-                break
+    # 最初の意味のある <p> テキストを取得
+    desc = ""
+    for m in re.finditer(r'<p[^>]*>([\s\S]*?)</p>', detail):
+        text = re.sub(r'<[^>]+>', '', m.group(1)).strip()
+        if len(text) > 10:
+            desc = text[:250]
+            break
 
-        await browser.close()
-        return {"name": chosen["name"], "url": chosen["url"], "title": title, "desc": desc}
+    return {"name": name, "url": url, "desc": desc}
 
 
 @bot.command()
 async def meme(ctx):
-    msg = await ctx.send("🎌 日本で話題のミームを調べてるよ...")
+    msg = await ctx.send("🎌 日本のミームを調べてるよ...")
     try:
         item = await fetch_pixiv_meme()
         if not item:
