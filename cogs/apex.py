@@ -1,8 +1,12 @@
+import datetime
+import json
 import random
+from pathlib import Path
+
 import aiohttp
 import discord
-from discord.ext import commands
-from config import APEX_API_KEY
+from discord.ext import commands, tasks
+from config import APEX_API_KEY, APEX_NEWS_CHANNEL_ID, JST
 
 APEX_LEGENDS = {
     "バンガロール":     "煙幕張って逃げるだけの消極的戦士",
@@ -154,9 +158,69 @@ async def build_apexstats_embed(username: str, platform: str = "PC"):
     return embed
 
 
+POSTED_NEWS_FILE = Path(__file__).parent.parent / "apex_posted_news.json"
+
+
+def load_posted_links() -> set[str]:
+    if POSTED_NEWS_FILE.exists():
+        return set(json.loads(POSTED_NEWS_FILE.read_text(encoding="utf-8")))
+    return set()
+
+
+def save_posted_links(links: set[str]):
+    POSTED_NEWS_FILE.write_text(
+        json.dumps(sorted(links)[-200:], ensure_ascii=False), encoding="utf-8"
+    )
+
+
+async def fetch_apex_news() -> list[dict]:
+    url = f"https://api.mozambiquehe.re/news?auth={APEX_API_KEY}"
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url) as resp:
+            return await resp.json(content_type=None)
+
+
 class Apex(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+        self.posted_links = load_posted_links()
+        if APEX_API_KEY and APEX_NEWS_CHANNEL_ID:
+            self.check_apex_news.start()
+
+    def cog_unload(self):
+        self.check_apex_news.cancel()
+
+    @tasks.loop(time=datetime.time(hour=9, minute=0, tzinfo=JST))
+    async def check_apex_news(self):
+        try:
+            news_list = await fetch_apex_news()
+        except Exception:
+            return
+        channel = self.bot.get_channel(APEX_NEWS_CHANNEL_ID)
+        if not channel:
+            return
+        new_articles = [
+            n for n in news_list
+            if n.get("link") and n["link"] not in self.posted_links
+        ]
+        for article in reversed(new_articles):
+            embed = discord.Embed(
+                title=article.get("title", "Apex Legends News"),
+                url=article.get("link"),
+                description=article.get("short_desc", ""),
+                color=discord.Color.dark_red(),
+            )
+            if article.get("img"):
+                embed.set_image(url=article["img"])
+            embed.set_footer(text="Apex Legends | EA")
+            await channel.send(embed=embed)
+            self.posted_links.add(article["link"])
+        if new_articles:
+            save_posted_links(self.posted_links)
+
+    @check_apex_news.before_loop
+    async def before_check_apex_news(self):
+        await self.bot.wait_until_ready()
 
     @commands.command()
     async def apex(self, ctx):

@@ -7,6 +7,7 @@ load_dotenv()
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 APEX_API_KEY = os.getenv("APEX_API_KEY")
+APEX_NEWS_CHANNEL_ID = int(os.getenv("APEX_NEWS_CHANNEL_ID", "1134854694645276704"))
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 gemini_client = google_genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
