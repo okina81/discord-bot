@@ -251,8 +251,8 @@ class Utils(commands.Cog):
             inline=False,
         )
         embed.add_field(
-            name="🤣 ミーム",
-            value="`!meme` でピクシブ百科事典のTwitter発ネタ一覧からランダムにミームを表示（過去ネタ含む）",
+            name="📈 トレンド",
+            value="`!trend` でネットで流行った言葉・トレンドをランダムに表示＆解説",
             inline=False,
         )
         embed.add_field(
