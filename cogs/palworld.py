@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import difflib
 import json
@@ -6,7 +7,9 @@ from pathlib import Path
 import aiohttp
 import discord
 from discord.ext import commands
-from config import PALWORLD_API_PASSWORD, PALWORLD_API_URL, PALWORLD_API_USER
+from config import (
+    PALWORLD_API_PASSWORD, PALWORLD_API_URL, PALWORLD_API_USER, PALWORLD_SERVER_ADDRESS,
+)
 
 DATA_PATH = Path(__file__).parent.parent / "data" / "palworld.json"
 
@@ -277,14 +280,52 @@ def build_type_embed(element: str | None) -> discord.Embed:
     return embed
 
 
+DEFAULT_REST_PORT = 8212
+
+
+def api_base_url() -> str | None:
+    """REST APIのURL。未設定なら接続先のホスト名＋既定ポート(8212)から組み立てる。"""
+    if PALWORLD_API_URL:
+        url = PALWORLD_API_URL.strip()
+        if "://" in url:  # 完全なURLならそのまま使う（リバースプロキシ経由なども想定）
+            return url.rstrip("/")
+        host = url
+    elif PALWORLD_SERVER_ADDRESS:
+        host = PALWORLD_SERVER_ADDRESS.split(":")[0]  # ゲーム用ポートはREST APIでは使わない
+    else:
+        return None
+    if ":" not in host:
+        host = f"{host}:{DEFAULT_REST_PORT}"
+    return f"http://{host}"
+
+
+def server_configured() -> bool:
+    return bool(PALWORLD_API_PASSWORD and api_base_url())
+
+
 async def fetch_server_json(endpoint: str) -> dict:
     token = base64.b64encode(f"{PALWORLD_API_USER}:{PALWORLD_API_PASSWORD}".encode()).decode()
-    url = f"{PALWORLD_API_URL.rstrip('/')}/v1/api/{endpoint}"
     headers = {"Authorization": f"Basic {token}", "Accept": "application/json"}
     async with aiohttp.ClientSession() as session:
-        async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+        async with session.get(
+            f"{api_base_url()}/v1/api/{endpoint}",
+            headers=headers,
+            timeout=aiohttp.ClientTimeout(total=15),
+        ) as resp:
             resp.raise_for_status()
             return await resp.json(content_type=None)
+
+
+def server_error_hint(error: Exception) -> str:
+    """繋がらなかった理由を、次に何をすればいいか分かる形で伝える。"""
+    if isinstance(error, aiohttp.ClientResponseError) and error.status in (401, 403):
+        return "🔑 管理者パスワードが違うみたい。`PALWORLD_API_PASSWORD` を確認してね。"
+    if isinstance(error, (aiohttp.ClientConnectorError, asyncio.TimeoutError)):
+        return (
+            f"🔌 `{api_base_url()}` に繋がらなかったよ。\n"
+            "サーバー側で `RESTAPIEnabled=True` にして、RESTAPIのポートを開放してね。"
+        )
+    return f"❌ サーバー情報の取得に失敗したよ: {error}"
 
 
 def format_uptime(seconds: int) -> str:
@@ -324,7 +365,26 @@ async def build_server_embed() -> discord.Embed:
         embed.add_field(name="🎮 参加中のプレイヤー", value="\n".join(lines), inline=False)
     else:
         embed.add_field(name="🎮 参加中のプレイヤー", value="いま誰もいないよ！", inline=False)
+    if PALWORLD_SERVER_ADDRESS:
+        embed.add_field(name="🔗 接続先", value=f"`{PALWORLD_SERVER_ADDRESS}`", inline=False)
     embed.set_footer(text=f"{info.get('version', '')} | Palworld REST API")
+    return embed
+
+
+def build_server_address_embed() -> discord.Embed:
+    """REST APIの設定が無いときに、接続先だけを案内する。"""
+    embed = discord.Embed(
+        title="🖥️ パルワールド専用サーバー",
+        description=f"**`{PALWORLD_SERVER_ADDRESS}`**",
+        color=discord.Color.teal(),
+    )
+    embed.add_field(
+        name="参加方法",
+        value="タイトル画面 →「マルチプレイに参加（専用サーバー）」→\n"
+              "右下の「参加するサーバーのIPを入力」に上のアドレスを貼り付け",
+        inline=False,
+    )
+    embed.set_footer(text="参加人数やFPSも出したい場合は PALWORLD_API_PASSWORD を設定してね")
     return embed
 
 
@@ -450,19 +510,17 @@ class Palworld(commands.Cog):
 
     @commands.command()
     async def palserver(self, ctx):
-        if not (PALWORLD_API_URL and PALWORLD_API_PASSWORD):
-            await ctx.send(
-                "❌ パルワールドのサーバー情報が設定されてないよ！\n"
-                "`PALWORLD_API_URL` と `PALWORLD_API_PASSWORD` を設定してね。"
-            )
+        if not server_configured():
+            await ctx.send(embed=build_server_address_embed())
             return
         msg = await ctx.send("🖥️ サーバーに接続中...")
         try:
             embed = await build_server_embed()
-            await msg.delete()
-            await ctx.send(embed=embed)
         except Exception as e:
-            await msg.edit(content=f"❌ サーバーに繋がらなかったよ: {e}")
+            await msg.edit(content=server_error_hint(e), embed=build_server_address_embed())
+            return
+        await msg.delete()
+        await ctx.send(embed=embed)
 
 
 async def setup(bot):

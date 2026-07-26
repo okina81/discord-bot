@@ -267,7 +267,9 @@ class Utils(commands.Cog):
         )
         embed.add_field(
             name="🖥️ パルワールドサーバー",
-            value="`!palserver` で専用サーバーの参加人数・FPS・稼働時間・参加者リストを表示\n※ `PALWORLD_API_URL` `PALWORLD_API_PASSWORD` の設定が必要",
+            value="`!palserver` でみんなが遊んでいる専用サーバーの接続先を表示\n"
+                  "`PALWORLD_API_URL` `PALWORLD_API_PASSWORD` を設定すると\n"
+                  "参加人数・サーバーFPS・稼働時間・参加者リストも表示",
             inline=False,
         )
         embed.add_field(
