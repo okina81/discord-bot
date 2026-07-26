@@ -15,6 +15,7 @@ EXTENSIONS = [
     "cogs.recruit",
     "cogs.pokemon",
     "cogs.apex",
+    "cogs.palworld",
     "cogs.fun",
     "cogs.utils",
     "cogs.panel",
