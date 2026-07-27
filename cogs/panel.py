@@ -14,9 +14,9 @@ from cogs.fun import (
 )
 from cogs.utils import build_mac_embed, build_ping_embed
 from cogs.palworld import (
-    PALWORLD_API_PASSWORD, PALWORLD_API_URL,
     PalBreedModal, PalDexModal, PalWorkSelect,
-    build_server_embed, build_type_embed,
+    build_server_address_embed, build_server_embed, build_type_embed,
+    server_configured, server_error_hint,
 )
 
 
@@ -175,16 +175,16 @@ class PanelView(discord.ui.View):
 
     @discord.ui.button(label="🖥️ パルサーバー", style=discord.ButtonStyle.success, row=4)
     async def btn_palserver(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not (PALWORLD_API_URL and PALWORLD_API_PASSWORD):
-            await interaction.response.send_message(
-                "❌ パルワールドのサーバー情報が設定されてないよ！", ephemeral=True
-            )
+        if not server_configured():
+            await interaction.response.send_message(embed=build_server_address_embed())
             return
         await interaction.response.defer(thinking=True)
         try:
             await interaction.followup.send(embed=await build_server_embed())
         except Exception as e:
-            await interaction.followup.send(f"❌ サーバーに繋がらなかったよ: {e}")
+            await interaction.followup.send(
+                server_error_hint(e), embed=build_server_address_embed()
+            )
 
 
 class Panel(commands.Cog):

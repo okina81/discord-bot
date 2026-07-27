@@ -2,10 +2,10 @@ import re
 import random
 import asyncio
 import time
+from html import unescape
 import aiohttp
 import discord
 from discord.ext import commands
-from playwright.async_api import async_playwright
 from helpers import parse_duration, format_duration
 
 MAC_CATEGORIES = {
@@ -17,36 +17,73 @@ MAC_CATEGORIES = {
 MAC_EXCLUDE = ["特殊立地", "アレルギー", "栄養", "ソース", "シロップ", "コーヒーフレッシュ",
                "シュガー", "リキッドレモン", "バターパット", "焙煎", "シーズニング"]
 
+# 公式サイトから取れなかったときに使うレギュラーメニュー
+MAC_REGULAR_MENU = {
+    "🍔 バーガー": [
+        "ハンバーガー", "チーズバーガー", "ダブルチーズバーガー", "ビッグマック",
+        "てりやきマックバーガー", "フィレオフィッシュ", "チキンフィレオ", "エビフィレオ",
+        "ベーコンレタスバーガー",
+    ],
+    "🍟 サイドメニュー": [
+        "マックフライポテト", "チキンマックナゲット 5ピース", "サイドサラダ", "ハッシュポテト",
+    ],
+    "🥤 ドリンク": [
+        "プレミアムローストコーヒー", "アイスコーヒー", "カフェラテ", "コカ・コーラ",
+        "ジンジャーエール", "ファンタグレープ", "メロンソーダ", "オレンジジュース",
+        "爽健美茶", "マックシェイク バニラ", "マックシェイク チョコレート",
+    ],
+    "🍦 スイーツ": [
+        "ホットアップルパイ", "ソフトツイスト", "マックフルーリー オレオ クッキー",
+        "サンデー チョコレート", "サンデー ストロベリー", "マックフロート コーラ",
+    ],
+}
+
+MAC_ITEM_PATTERN = re.compile(r"<strong[^>]*>\s*([^<>]{3,40}?)\s*</strong>")
+
+
+def extract_mac_items(html):
+    names = (unescape(name).strip() for name in MAC_ITEM_PATTERN.findall(html))
+    return list(dict.fromkeys(
+        name for name in names if name and not any(ex in name for ex in MAC_EXCLUDE)
+    ))
+
 
 async def fetch_mac_menu():
+    """公式サイトからメニュー名を取得する。取れなかったカテゴリは結果に入らない。"""
     result = {}
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
-        page = await browser.new_page()
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; DiscordBot/1.0)"}
+    timeout = aiohttp.ClientTimeout(total=15)
+    async with aiohttp.ClientSession(headers=headers, timeout=timeout) as session:
         for cat, url in MAC_CATEGORIES.items():
-            await page.goto(url, wait_until="networkidle")
-            items = await page.eval_on_selector_all(
-                "strong",
-                "els => els.map(el => el.innerText.trim()).filter(t => t.length > 2)"
-            )
-            filtered = [i for i in items if not any(ex in i for ex in MAC_EXCLUDE)]
-            result[cat] = list(dict.fromkeys(filtered))
-        await browser.close()
+            try:
+                async with session.get(url) as resp:
+                    if resp.status != 200:
+                        continue
+                    html = await resp.text()
+            except Exception:
+                continue
+            items = extract_mac_items(html)
+            if items:
+                result[cat] = items
     return result
 
 
 async def build_mac_embed():
     menu = await fetch_mac_menu()
-    if not menu:
-        return None
-    embed = discord.Embed(title="🍟 マックのおすすめメニュー（公式より）", color=discord.Color.red())
+    from_site = bool(menu)
+    if not from_site:
+        menu = MAC_REGULAR_MENU
+    embed = discord.Embed(title="🍟 マックのおすすめメニュー", color=discord.Color.red())
     total = 0
     for cat, items in menu.items():
         if items:
             picks = random.sample(items, min(2, len(items)))
             embed.add_field(name=cat, value="\n".join(f"・{i}" for i in picks), inline=False)
             total += len(items)
-    embed.set_footer(text=f"全{total}種類の中からランダム2選！ | mcdonalds.co.jp")
+    if from_site:
+        embed.set_footer(text=f"全{total}種類の中からランダム2選！ | mcdonalds.co.jp")
+    else:
+        embed.set_footer(text=f"レギュラーメニュー全{total}種類の中からランダム2選！")
     return embed
 
 
@@ -267,7 +304,9 @@ class Utils(commands.Cog):
         )
         embed.add_field(
             name="🖥️ パルワールドサーバー",
-            value="`!palserver` で専用サーバーの参加人数・FPS・稼働時間・参加者リストを表示\n※ `PALWORLD_API_URL` `PALWORLD_API_PASSWORD` の設定が必要",
+            value="`!palserver` でみんなが遊んでいる専用サーバーの接続先を表示\n"
+                  "`PALWORLD_API_URL` `PALWORLD_API_PASSWORD` を設定すると\n"
+                  "参加人数・サーバーFPS・稼働時間・参加者リストも表示",
             inline=False,
         )
         embed.add_field(
