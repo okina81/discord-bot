@@ -134,6 +134,13 @@ class Utils(commands.Cog):
             inline=False,
         )
         embed.add_field(
+            name="🎙️ ボイスチャット(所有者専用)",
+            value="`!voice join` でボイスチャンネルに参加しGeminiとリアルタイム会話\n"
+                  "`!voice leave` で退出\n"
+                  "5分間無音、または通話に誰もいなくなると自動退出",
+            inline=False,
+        )
+        embed.add_field(
             name="📰 フェイクニュース",
             value="`!news` でサーバーメンバーが登場するフィクションのゲームニュースを生成",
             inline=False,
