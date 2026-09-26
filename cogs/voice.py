@@ -6,6 +6,7 @@ import time
 
 import discord
 from discord.ext import commands, voice_recv
+from discord.ext.voice_recv import opus as voice_recv_opus
 from google.genai import types
 from config import GEMINI_API_KEY, gemini_client
 
@@ -17,6 +18,25 @@ def _log_future_error(future: "asyncio.Future"):
     exc = future.exception() if not future.cancelled() else None
     if exc:
         log.exception("voice input pipeline error", exc_info=exc)
+
+
+# discord-ext-voice-recvは1パケットのOpusデコードに失敗すると例外が
+# PacketRouterのスレッドまで伝播し、その場でリスニング全体を停止してしまう
+# (voice_recv/router.py の run() が例外を捕捉した後 stop_listening() を呼ぶ)。
+# 壊れたパケット1つで通話全体が無音になるのを防ぐため、デコード失敗時は
+# そのパケットだけを無音として捨てて処理を継続させる。
+_original_decode_packet = voice_recv_opus.PacketDecoder._decode_packet
+
+
+def _resilient_decode_packet(self, packet):
+    try:
+        return _original_decode_packet(self, packet)
+    except discord.opus.OpusError:
+        log.warning("voice recv: dropped a corrupted opus packet (ssrc=%s)", self.ssrc)
+        return packet, b""
+
+
+voice_recv_opus.PacketDecoder._decode_packet = _resilient_decode_packet
 
 LIVE_MODEL = "gemini-3.8-live"
 VOICE_NAME = "Puck"  # 明るい・アップビートな男性声
@@ -124,13 +144,39 @@ class VoiceSession:
         self._send_queue: asyncio.Queue = asyncio.Queue()
         self._task: asyncio.Task | None = None
         self._closed = False
+        self._loop: asyncio.AbstractEventLoop | None = None
 
     def start(self):
-        loop = asyncio.get_running_loop()
-        sink = GeminiInputSink(loop, self._on_input_pcm)
-        self.voice_client.listen(sink)
+        self._loop = asyncio.get_running_loop()
+        self._start_listening()
         self.voice_client.play(self.output)
         self._task = asyncio.create_task(self._run())
+
+    def _start_listening(self):
+        sink = GeminiInputSink(self._loop, self._on_input_pcm)
+        self.voice_client.listen(sink, after=self._on_listen_stopped)
+
+    def _on_listen_stopped(self, error: Exception | None):
+        # discord-ext-voice-recvのリーダースレッドから呼ばれるコールバック。
+        # 通常の切断(close()経由)ならself._closedが立っているので何もしない。
+        # 想定外にリスニングが停止した場合は音声入力が完全に無音になってしまうため、
+        # 自動で再度listen()し直す。
+        if self._closed:
+            return
+        if error:
+            log.warning("voice listen: stopped unexpectedly (%r), restarting", error)
+        else:
+            log.warning("voice listen: stopped unexpectedly, restarting")
+        asyncio.run_coroutine_threadsafe(self._restart_listening(), self._loop)
+
+    async def _restart_listening(self):
+        if self._closed:
+            return
+        try:
+            self._start_listening()
+            log.info("voice listen: restarted successfully")
+        except Exception:
+            log.exception("voice listen: failed to restart")
 
     async def _on_input_pcm(self, pcm: bytes):
         self.last_activity = time.monotonic()
