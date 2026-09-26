@@ -72,6 +72,7 @@ VOICE_NAME = "Puck"  # 明るい・アップビートな男性声
 IDLE_TIMEOUT_SECONDS = 300
 IDLE_CHECK_INTERVAL = 30
 RECONNECT_GRACE_SECONDS = 15
+INPUT_PAUSE_SECONDS = 0.5
 
 DISCORD_RATE = 48000
 GEMINI_IN_RATE = 16000
@@ -253,12 +254,24 @@ class VoiceSession:
             await self.cog.leave(self.guild.id)
 
     async def _send_loop(self, session):
+        # Discordのクライアントは無音時にパケット自体を送らないため、Gemini側からは
+        # 音声が途中で途切れたようにしか見えず発話の終わりを判定できない。
+        # 入力が途切れたらaudio_stream_endを送り、発話の確定と応答生成を促す。
         sent_count = 0
+        streaming = False
         while True:
-            pcm = await self._send_queue.get()
+            try:
+                pcm = await asyncio.wait_for(self._send_queue.get(), timeout=INPUT_PAUSE_SECONDS)
+            except asyncio.TimeoutError:
+                if streaming:
+                    await session.send_realtime_input(audio_stream_end=True)
+                    streaming = False
+                    log.info("voice send: input paused, sent audio_stream_end")
+                continue
             await session.send_realtime_input(
                 audio=types.Blob(data=pcm, mime_type=f"audio/pcm;rate={GEMINI_IN_RATE}")
             )
+            streaming = True
             sent_count += 1
             if sent_count == 1 or sent_count % 50 == 0:
                 log.info("voice send: %d chunks sent to Gemini so far", sent_count)
