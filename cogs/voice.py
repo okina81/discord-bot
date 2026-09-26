@@ -4,6 +4,7 @@ import logging
 import threading
 import time
 
+import davey
 import discord
 from discord.ext import commands, voice_recv
 from discord.ext.voice_recv import opus as voice_recv_opus
@@ -38,6 +39,34 @@ def _resilient_decode_packet(self, packet):
 
 voice_recv_opus.PacketDecoder._decode_packet = _resilient_decode_packet
 
+
+# Discordは2026年3月からボイスのE2E暗号化(DAVE)を必須化しており、受信したOpusフレームは
+# トランスポート層の復号後もDAVEで暗号化されたまま(末尾が0xFAFA)。discord.py 2.7は送信側の
+# DAVE暗号化に対応しているが、discord-ext-voice-recv 0.5.2は受信フレームのDAVE復号をしない
+# ため、暗号文がそのままOpusデコーダーに渡され大半のパケットが"corrupted stream"になる。
+# ジッターバッファに積む前に、接続中のDAVEセッションで復号しておく。
+DAVE_FRAME_MARKER = b"\xfa\xfa"
+_original_push_packet = voice_recv_opus.PacketDecoder.push_packet
+
+
+def _dave_decrypting_push_packet(self, packet):
+    data = getattr(packet, "decrypted_data", None)
+    if data and data.endswith(DAVE_FRAME_MARKER):
+        vc = self.sink.voice_client
+        session = getattr(getattr(vc, "_connection", None), "dave_session", None)
+        user_id = vc._get_id_from_ssrc(self.ssrc) if vc else None
+        if session is None or not session.ready or user_id is None:
+            return
+        try:
+            packet.decrypted_data = session.decrypt(user_id, davey.MediaType.audio, data)
+        except Exception as e:
+            log.debug("voice recv: DAVE decrypt failed (ssrc=%s): %r", self.ssrc, e)
+            return
+    _original_push_packet(self, packet)
+
+
+voice_recv_opus.PacketDecoder.push_packet = _dave_decrypting_push_packet
+
 LIVE_MODEL = "gemini-3.8-live"
 VOICE_NAME = "Puck"  # 明るい・アップビートな男性声
 IDLE_TIMEOUT_SECONDS = 300
@@ -54,6 +83,7 @@ SYSTEM_INSTRUCTION = (
     "常にノリの良い関西弁(大阪弁)で、テンション高めにカジュアルに、簡潔に会話してください。"
     "標準語や丁寧語には絶対に戻らないでください。"
 )
+GREETING_PROMPT = "今ボイスチャンネルに参加したところです。みんなに一言だけ短く挨拶してください。"
 
 
 class GeminiOutputSource(discord.AudioSource):
@@ -195,6 +225,10 @@ class VoiceSession:
             )
             async with gemini_client.aio.live.connect(model=LIVE_MODEL, config=config) as session:
                 log.info("voice session: connected to %s for guild %s", LIVE_MODEL, self.guild.id)
+                await session.send_client_content(
+                    turns=types.Content(role="user", parts=[types.Part(text=GREETING_PROMPT)]),
+                    turn_complete=True,
+                )
                 tasks = [
                     asyncio.create_task(self._send_loop(session)),
                     asyncio.create_task(self._recv_loop(session)),
