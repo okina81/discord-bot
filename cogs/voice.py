@@ -1,5 +1,6 @@
 import asyncio
 import audioop
+import logging
 import threading
 import time
 
@@ -7,6 +8,15 @@ import discord
 from discord.ext import commands, voice_recv
 from google.genai import types
 from config import GEMINI_API_KEY, gemini_client
+
+log = logging.getLogger(__name__)
+
+
+def _log_future_error(future: "asyncio.Future"):
+    """run_coroutine_threadsafeの戻り値は誰も見ないと例外が握りつぶされるため、ログに残す。"""
+    exc = future.exception() if not future.cancelled() else None
+    if exc:
+        log.exception("voice input pipeline error", exc_info=exc)
 
 LIVE_MODEL = "gemini-3.8-live"
 VOICE_NAME = "Puck"  # 明るい・アップビートな男性声
@@ -88,7 +98,8 @@ class GeminiInputSink(voice_recv.AudioSink):
         state = self._rate_states.get(user.id)
         converted, state = audioop.ratecv(mono, 2, 1, DISCORD_RATE, GEMINI_IN_RATE, state)
         self._rate_states[user.id] = state
-        asyncio.run_coroutine_threadsafe(self._on_pcm(converted), self._loop)
+        future = asyncio.run_coroutine_threadsafe(self._on_pcm(converted), self._loop)
+        future.add_done_callback(_log_future_error)
 
     def cleanup(self):
         self._rate_states.clear()
@@ -195,7 +206,7 @@ class VoiceSession:
             self._task.cancel()
             try:
                 await self._task
-            except Exception:
+            except (asyncio.CancelledError, Exception):
                 pass
         try:
             self.voice_client.stop()
@@ -252,7 +263,13 @@ class Voice(commands.Cog):
 
         session = VoiceSession(self, ctx.guild, vc, ctx.channel)
         self.sessions[ctx.guild.id] = session
-        session.start()
+        try:
+            session.start()
+        except Exception as e:
+            self.sessions.pop(ctx.guild.id, None)
+            await vc.disconnect(force=True)
+            await ctx.send(f"❌ 開始に失敗したよ: {type(e).__name__}: {e}")
+            return
         await ctx.send(f"🎙️ **{channel.name}** に参加したよ！話しかけてね")
 
     @commands.Cog.listener()

@@ -11,9 +11,7 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 EXTENSIONS = [
     "cogs.recruit",
-    "cogs.pokemon",
     "cogs.apex",
-    "cogs.palworld",
     "cogs.voice",
     "cogs.fun",
     "cogs.utils",

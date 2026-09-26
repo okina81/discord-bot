@@ -82,11 +82,6 @@ class Utils(commands.Cog):
             inline=False,
         )
         embed.add_field(
-            name="📊 ポケモン種族値",
-            value="ポケモンの名前を含む発言をすると\n自動で種族値を表示",
-            inline=False,
-        )
-        embed.add_field(
             name="🎯 Apexレジェンド",
             value="`!apex` でランダムにレジェンドを1人選出\nディスりキャッチコピー付き",
             inline=False,
@@ -107,33 +102,6 @@ class Utils(commands.Cog):
             inline=False,
         )
         embed.add_field(
-            name="🐾 パルワールド図鑑",
-            value="`!pal モコロン` でパルの属性・弱点・作業適性・ステータスを表示\n英語名（`!pal Lamball`）でもOK",
-            inline=False,
-        )
-        embed.add_field(
-            name="🥚 パル交配計算",
-            value="`!palbreed モコロン キツネビ` で生まれるパルを計算\n`!palparent アヌビス` で逆にそのパルが生まれる親の組み合わせを検索",
-            inline=False,
-        )
-        embed.add_field(
-            name="🛠️ パル作業適性検索",
-            value="`!palwork 採掘 3` で採掘Lv3以上のパルをランキング表示\n拠点のパル選びに（火起こし・水やり・種まき・発電・手作業・採取・伐採・採掘・製薬・冷却・運搬・牧場）",
-            inline=False,
-        )
-        embed.add_field(
-            name="🔰 パル属性相性",
-            value="`!paltype` で属性相性表を表示\n`!paltype 炎` で炎属性の有利・弱点と強いパルを表示",
-            inline=False,
-        )
-        embed.add_field(
-            name="🖥️ パルワールドサーバー",
-            value="`!palserver` でみんなが遊んでいる専用サーバーの接続先を表示\n"
-                  "`PALWORLD_API_URL` `PALWORLD_API_PASSWORD` を設定すると\n"
-                  "参加人数・サーバーFPS・稼働時間・参加者リストも表示",
-            inline=False,
-        )
-        embed.add_field(
             name="🎙️ ボイスチャット(所有者専用)",
             value="`!voice join` でボイスチャンネルに参加しGeminiとリアルタイム会話\n"
                   "`!voice leave` で退出\n"
@@ -147,7 +115,7 @@ class Utils(commands.Cog):
         )
         embed.add_field(
             name="🎮 コントロールパネル",
-            value="`!panel` でボタン式メニューを表示\nランクマップ・サーバー状態・Apex統計・回線速度・フェイクニュース・パル図鑑・パル交配・作業適性・属性相性・パルサーバーをワンタップで操作",
+            value="`!panel` でボタン式メニューを表示\nランクマップ・サーバー状態・Apex統計・回線速度・フェイクニュースをワンタップで操作",
             inline=False,
         )
         embed.set_footer(text="このチャンネル専用Bot")

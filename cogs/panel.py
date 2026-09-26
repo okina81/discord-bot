@@ -11,11 +11,6 @@ from cogs.fun import (
     fill_template, scan_messages, generate_ai_news,
 )
 from cogs.utils import build_ping_embed
-from cogs.palworld import (
-    PalBreedModal, PalDexModal, PalWorkSelect,
-    build_server_address_embed, build_server_embed, build_type_embed,
-    server_configured, server_error_hint,
-)
 
 
 class ApexStatsModal(discord.ui.Modal, title="👤 Apex プレイヤー統計"):
@@ -92,37 +87,6 @@ class PanelView(discord.ui.View):
             embed = discord.Embed(title="📰 速報 — 今北Bot通信社", description="\n\n".join(lines), color=discord.Color.yellow())
             embed.set_footer(text="※ この記事はフィクションです")
         await interaction.followup.send(embed=embed)
-
-    @discord.ui.button(label="🐾 パル図鑑", style=discord.ButtonStyle.success, row=3)
-    async def btn_paldex(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(PalDexModal())
-
-    @discord.ui.button(label="🥚 パル交配", style=discord.ButtonStyle.success, row=3)
-    async def btn_palbreed(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(PalBreedModal())
-
-    @discord.ui.button(label="🛠️ 作業適性", style=discord.ButtonStyle.success, row=3)
-    async def btn_palwork(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_message(
-            "どの作業のパルを探す？", view=PalWorkSelect(), ephemeral=True
-        )
-
-    @discord.ui.button(label="🔰 属性相性", style=discord.ButtonStyle.success, row=3)
-    async def btn_paltype(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_message(embed=build_type_embed(None))
-
-    @discord.ui.button(label="🖥️ パルサーバー", style=discord.ButtonStyle.success, row=4)
-    async def btn_palserver(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not server_configured():
-            await interaction.response.send_message(embed=build_server_address_embed())
-            return
-        await interaction.response.defer(thinking=True)
-        try:
-            await interaction.followup.send(embed=await build_server_embed())
-        except Exception as e:
-            await interaction.followup.send(
-                server_error_hint(e), embed=build_server_address_embed()
-            )
 
 
 class Panel(commands.Cog):
