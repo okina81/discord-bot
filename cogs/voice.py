@@ -71,6 +71,7 @@ LIVE_MODEL = "gemini-3.8-live"
 VOICE_NAME = "Puck"  # 明るい・アップビートな男性声
 IDLE_TIMEOUT_SECONDS = 300
 IDLE_CHECK_INTERVAL = 30
+RECONNECT_GRACE_SECONDS = 15
 
 DISCORD_RATE = 48000
 GEMINI_IN_RATE = 16000
@@ -377,7 +378,16 @@ class Voice(commands.Cog):
     async def on_voice_state_update(self, member, before, after):
         if member.id == self.bot.user.id:
             if after.channel is None:
-                await self.leave(member.guild.id)
+                session = self.sessions.get(member.guild.id)
+                if session is None:
+                    return
+                # discord.pyはボイスWSが4006等で切れると、一度channel=Noneで抜けてから
+                # 自動で入り直す。ここで即leave()すると再接続を潰してしまうため、
+                # 猶予を置いてから本当に切断されたままかを確認する。
+                log.info("voice: bot left channel, waiting %ds for auto-reconnect", RECONNECT_GRACE_SECONDS)
+                await asyncio.sleep(RECONNECT_GRACE_SECONDS)
+                if self.sessions.get(member.guild.id) is session and not session.voice_client.is_connected():
+                    await self.leave(member.guild.id)
             return
 
         session = self.sessions.get(member.guild.id)
