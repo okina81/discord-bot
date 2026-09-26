@@ -1,90 +1,8 @@
-import re
 import random
-import asyncio
 import time
-from html import unescape
 import aiohttp
 import discord
 from discord.ext import commands
-from helpers import parse_duration, format_duration
-
-MAC_CATEGORIES = {
-    "🍔 バーガー": "https://www.mcdonalds.co.jp/menu/burger/",
-    "🍟 サイドメニュー": "https://www.mcdonalds.co.jp/menu/side/",
-    "🥤 ドリンク": "https://www.mcdonalds.co.jp/menu/drink/",
-    "🍦 スイーツ": "https://www.mcdonalds.co.jp/menu/dessert/",
-}
-MAC_EXCLUDE = ["特殊立地", "アレルギー", "栄養", "ソース", "シロップ", "コーヒーフレッシュ",
-               "シュガー", "リキッドレモン", "バターパット", "焙煎", "シーズニング"]
-
-# 公式サイトから取れなかったときに使うレギュラーメニュー
-MAC_REGULAR_MENU = {
-    "🍔 バーガー": [
-        "ハンバーガー", "チーズバーガー", "ダブルチーズバーガー", "ビッグマック",
-        "てりやきマックバーガー", "フィレオフィッシュ", "チキンフィレオ", "エビフィレオ",
-        "ベーコンレタスバーガー",
-    ],
-    "🍟 サイドメニュー": [
-        "マックフライポテト", "チキンマックナゲット 5ピース", "サイドサラダ", "ハッシュポテト",
-    ],
-    "🥤 ドリンク": [
-        "プレミアムローストコーヒー", "アイスコーヒー", "カフェラテ", "コカ・コーラ",
-        "ジンジャーエール", "ファンタグレープ", "メロンソーダ", "オレンジジュース",
-        "爽健美茶", "マックシェイク バニラ", "マックシェイク チョコレート",
-    ],
-    "🍦 スイーツ": [
-        "ホットアップルパイ", "ソフトツイスト", "マックフルーリー オレオ クッキー",
-        "サンデー チョコレート", "サンデー ストロベリー", "マックフロート コーラ",
-    ],
-}
-
-MAC_ITEM_PATTERN = re.compile(r"<strong[^>]*>\s*([^<>]{3,40}?)\s*</strong>")
-
-
-def extract_mac_items(html):
-    names = (unescape(name).strip() for name in MAC_ITEM_PATTERN.findall(html))
-    return list(dict.fromkeys(
-        name for name in names if name and not any(ex in name for ex in MAC_EXCLUDE)
-    ))
-
-
-async def fetch_mac_menu():
-    """公式サイトからメニュー名を取得する。取れなかったカテゴリは結果に入らない。"""
-    result = {}
-    headers = {"User-Agent": "Mozilla/5.0 (compatible; DiscordBot/1.0)"}
-    timeout = aiohttp.ClientTimeout(total=15)
-    async with aiohttp.ClientSession(headers=headers, timeout=timeout) as session:
-        for cat, url in MAC_CATEGORIES.items():
-            try:
-                async with session.get(url) as resp:
-                    if resp.status != 200:
-                        continue
-                    html = await resp.text()
-            except Exception:
-                continue
-            items = extract_mac_items(html)
-            if items:
-                result[cat] = items
-    return result
-
-
-async def build_mac_embed():
-    menu = await fetch_mac_menu()
-    from_site = bool(menu)
-    if not from_site:
-        menu = MAC_REGULAR_MENU
-    embed = discord.Embed(title="🍟 マックのおすすめメニュー", color=discord.Color.red())
-    total = 0
-    for cat, items in menu.items():
-        if items:
-            picks = random.sample(items, min(2, len(items)))
-            embed.add_field(name=cat, value="\n".join(f"・{i}" for i in picks), inline=False)
-            total += len(items)
-    if from_site:
-        embed.set_footer(text=f"全{total}種類の中からランダム2選！ | mcdonalds.co.jp")
-    else:
-        embed.set_footer(text=f"レギュラーメニュー全{total}種類の中からランダム2選！")
-    return embed
 
 
 async def build_ping_embed():
@@ -141,19 +59,6 @@ class Utils(commands.Cog):
         self.bot = bot
 
     @commands.command()
-    async def mac(self, ctx):
-        msg = await ctx.send("🍟 マックのメニューを取得中...")
-        try:
-            embed = await build_mac_embed()
-            if embed:
-                await msg.delete()
-                await ctx.send(embed=embed)
-            else:
-                await msg.edit(content="メニューの取得に失敗しました。時間をおいて試してみてください。")
-        except Exception as e:
-            await msg.edit(content=f"エラーが発生しました: {e}")
-
-    @commands.command()
     async def ping(self, ctx):
         msg = await ctx.send("🌐 通信速度を測定中... しばらく待ってね（10〜20秒かかるよ）")
         try:
@@ -164,87 +69,11 @@ class Utils(commands.Cog):
             await msg.edit(content=f"❌ 測定に失敗しました: {e}")
 
     @commands.command()
-    async def timer(self, ctx, duration: str):
-        seconds = parse_duration(duration)
-        if seconds is None:
-            await ctx.send("⏱️ 時間の形式が違うよ！例: `!timer 10m` `!timer 1h30m` `!timer 30s`")
-            return
-        if seconds > 3 * 3600:
-            await ctx.send("⏱️ タイマーは最大3時間までだよ！")
-            return
-        label = format_duration(seconds)
-        await ctx.send(f"⏱️ {label}後に {ctx.author.mention} を呼び出すよ！")
-        await asyncio.sleep(seconds)
-        await ctx.send(f"⏰ {ctx.author.mention} タイムアップ！{label}経ったぞ、そろそろゲームやろ！")
-
-    @commands.command()
-    async def who(self, ctx):
-        embed = discord.Embed(title="🤖 自己紹介", color=discord.Color.og_blurple())
-        embed.add_field(name="名前", value="今北尚杜", inline=True)
-        embed.add_field(name="住所", value="神戸市", inline=True)
-        embed.add_field(name="職業", value="職なし子供部屋おじさんだにょ", inline=False)
-        embed.add_field(name="見た目", value="台パンチビ眼鏡", inline=False)
-        embed.add_field(name="役職", value="このサーバーの奴隷です", inline=False)
-        embed.add_field(name="特技", value="破壊と近親相姦", inline=False)
-        await ctx.send(embed=embed)
-
-    @commands.command()
-    async def hello(self, ctx):
-        await ctx.send(f"こんにちは、{ctx.author.name}さん！")
-
-    @commands.command()
-    async def emoji(self, ctx, name: str = None, url: str = None):
-        if not ctx.guild.me.guild_permissions.manage_expressions:
-            await ctx.send("❌ Botに「絵文字の管理」権限がないよ！")
-            return
-        if name is None:
-            await ctx.send(
-                "❌ 使い方: `!emoji <名前> [画像URL]`\n"
-                "画像URLを省略した場合は画像ファイルを添付してね。\n"
-                "例: `!emoji kawaii https://example.com/image.png`"
-            )
-            return
-        if not re.fullmatch(r"[a-zA-Z0-9_]{2,32}", name):
-            await ctx.send("❌ 絵文字の名前は英数字・アンダーバーのみ、2〜32文字で指定してね。")
-            return
-        image_url = url
-        if image_url is None:
-            if ctx.message.attachments:
-                image_url = ctx.message.attachments[0].url
-            else:
-                await ctx.send("❌ 画像URLか画像ファイルを添付してね。")
-                return
-        msg = await ctx.send("🎨 絵文字を作成中...")
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(image_url) as resp:
-                    if resp.status != 200:
-                        await msg.edit(content=f"❌ 画像の取得に失敗したよ（HTTP {resp.status}）")
-                        return
-                    image_data = await resp.read()
-            new_emoji = await ctx.guild.create_custom_emoji(name=name, image=image_data)
-            await msg.edit(content=f"✅ 絵文字 {new_emoji} `:{name}:` を追加したよ！")
-        except discord.HTTPException as e:
-            if e.code == 30008:
-                await msg.edit(content="❌ サーバーの絵文字スロットが満杯だよ！")
-            elif e.code == 50138:
-                await msg.edit(content="❌ 画像サイズが大きすぎるよ（256KB以下にしてね）")
-            else:
-                await msg.edit(content=f"❌ 絵文字の作成に失敗したよ: {e.text}")
-        except Exception as e:
-            await msg.edit(content=f"❌ エラーが発生したよ: {e}")
-
-    @commands.command()
     async def usage(self, ctx):
         embed = discord.Embed(title="🤖 Botの使い方", color=discord.Color.blurple())
         embed.add_field(
             name="🎮 ゲーム募集",
             value="`募集` `募` `ぼ` を含む発言をすると参加者を募る投票を自動で作成\n✅ 参加する　🕐 後から参加（時間をDMで聞いて自動タイマー）　❌ 参加できない",
-            inline=False,
-        )
-        embed.add_field(
-            name="🍟 マックのおすすめ",
-            value="`!mac` で公式サイトから\nカテゴリ別おすすめメニューをランダム表示",
             inline=False,
         )
         embed.add_field(
@@ -255,11 +84,6 @@ class Utils(commands.Cog):
         embed.add_field(
             name="📊 ポケモン種族値",
             value="ポケモンの名前を含む発言をすると\n自動で種族値を表示",
-            inline=False,
-        )
-        embed.add_field(
-            name="⏱️ タイマー",
-            value="`!timer 10m` `!timer 1h30m` `!timer 30s` など\n指定した時間後にメンションで呼び出す（最大3時間）",
             inline=False,
         )
         embed.add_field(
@@ -310,53 +134,13 @@ class Utils(commands.Cog):
             inline=False,
         )
         embed.add_field(
-            name="⚔️ チーム分け",
-            value="`!team @A @B @C @D ...` でメンションした人をランダムに2チームへ振り分け",
-            inline=False,
-        )
-        embed.add_field(
-            name="📈 トレンド",
-            value="`!trend` でネットで流行った言葉・トレンドをランダムに表示＆解説",
-            inline=False,
-        )
-        embed.add_field(
-            name="🔥 煽り",
-            value="`!roast @ユーザー` で指定した人を煽る",
-            inline=False,
-        )
-        embed.add_field(
-            name="🎰 罰ゲームルーレット",
-            value="`!roulette` でランダムに罰ゲームを決定\n`!roulette @ユーザー` で指定したユーザーにルーレットを実行",
-            inline=False,
-        )
-        embed.add_field(
-            name="📊 サーバー統計",
-            value="`!stats` で発言数ランキングと絵文字TOP5を表示",
-            inline=False,
-        )
-        embed.add_field(
-            name="📈 レベルシステム",
-            value="`!rank` で自分のレベル・XP・順位を表示\n`!rank @ユーザー` で他の人のランクも確認可能\n`!leaderboard` でレベルランキングTOP10\nメッセージを送るとXPが貯まる（60秒クールダウン）",
-            inline=False,
-        )
-        embed.add_field(
-            name="🤖 Bot自己紹介",
-            value="`!who` でBotのプロフィールを表示",
-            inline=False,
-        )
-        embed.add_field(
             name="📰 フェイクニュース",
             value="`!news` でサーバーメンバーが登場するフィクションのゲームニュースを生成",
             inline=False,
         )
         embed.add_field(
-            name="🎨 絵文字作成",
-            value="`!emoji <名前> [画像URL]` でサーバーにカスタム絵文字を追加\n画像URLを省略した場合は画像ファイルを添付してね\n例: `!emoji kawaii https://example.com/image.png`",
-            inline=False,
-        )
-        embed.add_field(
             name="🎮 コントロールパネル",
-            value="`!panel` でボタン式メニューを表示\nランクマップ・サーバー状態・Apex統計・チーム分け・ルーレット・マック・サーバー統計・回線速度・フェイクニュース・パル図鑑・パル交配・作業適性・属性相性・パルサーバーをワンタップで操作",
+            value="`!panel` でボタン式メニューを表示\nランクマップ・サーバー状態・Apex統計・回線速度・フェイクニュース・パル図鑑・パル交配・作業適性・属性相性・パルサーバーをワンタップで操作",
             inline=False,
         )
         embed.set_footer(text="このチャンネル専用Bot")

@@ -1,42 +1,13 @@
 import random
 import asyncio
-from urllib.parse import quote
 import discord
 from discord.ext import commands
-from config import TARGET_USER_IDS, GEMINI_API_KEY, gemini_client
+from config import GEMINI_API_KEY, gemini_client
 from cogs.apex import APEX_LEGENDS
 
 APEX_MAPS_JA = [
     "ワールズエッジ", "ストームポイント", "ブロークンムーン",
     "キングスキャニオン", "オリンパス",
-]
-
-ROASTS = [
-    "こいつの存在意義、マジで誰か教えてくれ",
-    "生まれてきた理由を今すぐ神に問い合わせた方がいい",
-    "こいつがいると空気の密度が下がる気がする",
-    "人生の方向性、完全に迷子やん",
-    "こいつの将来を占ったら「霧」って出た",
-    "話す内容が毎回5秒で忘れられるレベル",
-    "このサーバーの平均IQを下げてる最有力候補",
-    "存在がノイズ",
-    "こいつのポジション、空気でよくない？",
-    "生きてるだけで偉いと思ってそう（褒めてない）",
-]
-
-ROULETTES = [
-    "🍺 次の集まりで全員分おごり確定！",
-    "💪 その場で腕立て20回！",
-    "🎤 一発ギャグを披露しろ！",
-    "🍜 明日のランチは一人で吉野家",
-    "📵 24時間スマホ禁止！",
-    "🐔 次のゲームでチキンプレイ縛り",
-    "💸 500円募金しろ",
-    "🎵 一曲フルで熱唱しろ",
-    "🧹 次の集まりの片付けは全部お前",
-    "👶 今日一日「〜だにょ」口調で話せ",
-    "🤐 1時間無言縛り",
-    "🙇 全員に土下座しろ",
 ]
 
 NEWS_TEMPLATES = [
@@ -66,58 +37,6 @@ NEWS_TEMPLATES = [
     "{user1}と{user2}、声が被りまくるもお互いに謝らず。",
     "{user}、{map}で芋り続けて7位。本人は「戦略」と主張。",
 ]
-
-JP_TRENDS = [
-    # 2013
-    "激おこぷんぷん丸", "倍返しだ!", "今でしょ!", "じぇじぇじぇ",
-    "お・も・て・な・し", "マカンコウサッポウ", "アベノミクス",
-    # 2014
-    "壁ドン", "ダメよ〜ダメダメ", "ありのままで", "妖怪ウォッチ",
-    "レリゴー", "STAP細胞はあります", "バケツチャレンジ",
-    # 2015
-    "安心してください、穿いてますよ", "ラッスンゴレライ", "五郎丸ポーズ",
-    "爆買い", "ドローン", "エンブレム問題",
-    # 2016
-    "PPAP", "ポケモンGO", "神ってる", "ゲス不倫",
-    "センテンススプリング", "シン・ゴジラ", "君の名は。",
-    # 2017
-    "5000兆円欲しい!", "このハゲーーー!", "忖度", "インスタ映え",
-    "けものフレンズ", "すごーい!君は○○なフレンズなんだね!",
-    "35億", "プレミアムフライデー",
-    # 2018
-    "大迫半端ないって", "クッパ姫", "そだねー", "eスポーツ",
-    "バーチャルYouTuber", "キズナアイ", "もぐもぐタイム",
-    "ボーッと生きてんじゃねーよ!", "TikTok", "グリッドマン",
-    # 2019
-    "令和", "タピオカ", "上級国民", "NHKをぶっ壊す",
-    "闇営業", "ONE TEAM", "計画通り", "ハンドスピナー",
-    "笑ってはいけない", "100日後に死ぬワニ",
-    # 2020
-    "あつまれどうぶつの森", "鬼滅の刃", "全集中の呼吸",
-    "三密", "密です", "アマビエ", "ソーシャルディスタンス",
-    "鬼滅の刃 無限列車編", "Zoom映え", "アベノマスク",
-    # 2021
-    "うっせぇわ", "親ガチャ", "ゴン攻め", "黙食",
-    "GetWild退勤", "ピクトグラム", "リアル二刀流",
-    "ウマ娘", "Z世代", "推し活", "人流",
-    # 2022
-    "おじさん構文", "ちいかわ", "知らんけど", "それってあなたの感想ですよね",
-    "ぼっち・ざ・ろっく!", "きつねダンス", "村神様",
-    "スパイファミリー", "ヌン活", "タイパ", "悪い顔",
-    # 2023
-    "推しの子", "蛙化現象", "ひき肉です", "生成AI", "アレ(A.R.E.)",
-    "なぁぜなぁぜ", "かわちい", "ChatGPT", "闇バイト",
-    "スイカゲーム", "新しい学校のリーダーズ", "アイドル(YOASOBI)",
-    # 2024
-    "葬送のフリーレン", "ふてにゃん", "でこぴん", "界隈",
-    "Bling-Bang-Bang-Born", "猫ミーム", "はいよろこんで",
-    "名探偵コナン 100万ドルの五稜星", "裏金問題",
-    "50-50", "ふてほど", "もうええでしょう", "BeReal",
-    # 2025
-    "石丸構文", "マイナ保険証", "ルックバック", "学マス",
-    "令和ロマン", "チームラボ", "ジャンボリミッキー",
-]
-
 
 def fill_template(template: str, members: list) -> str:
     used: list = []
@@ -197,65 +116,6 @@ async def generate_ai_news(history: str, member_names: list[str]) -> str | None:
 class Fun(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-
-    @commands.command()
-    async def roast(self, ctx, member: discord.Member):
-        roast_text = random.choice(ROASTS)
-        await ctx.send(f"🔥 {member.mention}　→　{roast_text}")
-
-    @commands.command()
-    async def roulette(self, ctx, member: discord.Member = None):
-        target = member or ctx.author
-        msg = await ctx.send("🎰 ルーレット回転中...")
-        await asyncio.sleep(2)
-        if target.id in TARGET_USER_IDS:
-            result = "🍺 次の集まりで全員分おごり確定！"
-        else:
-            result = random.choice(ROULETTES)
-        await msg.edit(content=f"🎰 **結果発表！** {target.mention}\n{result}")
-
-    @commands.command()
-    async def team(self, ctx, *members: discord.Member):
-        if len(members) < 2:
-            await ctx.send("❌ 2人以上メンションしてね！例: `!team @A @B @C @D @E @F`")
-            return
-        shuffled = list(members)
-        random.shuffle(shuffled)
-        mid = (len(shuffled) + 1) // 2
-        team_a = shuffled[:mid]
-        team_b = shuffled[mid:]
-        embed = discord.Embed(title="⚔️ チーム分け結果", color=discord.Color.blue())
-        embed.add_field(name="🔴 チームA", value="\n".join(f"・{m.display_name}" for m in team_a), inline=True)
-        embed.add_field(name="🔵 チームB", value="\n".join(f"・{m.display_name}" for m in team_b), inline=True)
-        if len(members) % 2 != 0:
-            embed.set_footer(text="人数が奇数のためチームAに1人多く振り分けました")
-        await ctx.send(embed=embed)
-
-    @commands.command()
-    async def trend(self, ctx):
-        name = random.choice(JP_TRENDS)
-        url = f"https://dic.pixiv.net/a/{quote(name, safe='')}"
-        embed = discord.Embed(title=name, url=url, color=discord.Color.blue())
-        if gemini_client:
-            try:
-                resp = await asyncio.to_thread(
-                    gemini_client.models.generate_content,
-                    model="gemini-2.5-flash-lite",
-                    contents=(
-                        f"「{name}」という日本のネット流行語・トレンドについて、"
-                        "以下の形式で書いてください。\n\n"
-                        "1行目: 当時の空気感が伝わるような懐かしくて面白い解説（2〜3文）。"
-                        "「あの頃みんな○○してたよね」「TLが○○で埋め尽くされてた」のような、"
-                        "当時を知ってる人が思わず「あったあったw」となるノリで書くこと。\n"
-                        "2行目: 空行\n"
-                        "3行目: 🗓️ 流行った時期（例: 2016年頃）"
-                    ),
-                )
-                embed.description = resp.text.strip()
-            except Exception:
-                pass
-        embed.set_footer(text="出典: ピクシブ百科事典")
-        await ctx.send(embed=embed)
 
     @commands.command()
     async def news(self, ctx):

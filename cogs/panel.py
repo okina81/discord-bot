@@ -1,48 +1,21 @@
 import random
-import asyncio
 import discord
 from discord.ext import commands
-from config import TARGET_USER_IDS, GEMINI_API_KEY
+from config import GEMINI_API_KEY
 from cogs.apex import (
     APEX_LEGENDS, APEX_API_KEY,
     build_rankmap_embed, build_apexstatus_embed, build_apexstats_embed,
 )
-from cogs.stats import build_stats_embed
 from cogs.fun import (
-    ROULETTES, NEWS_TEMPLATES,
+    NEWS_TEMPLATES,
     fill_template, scan_messages, generate_ai_news,
 )
-from cogs.utils import build_mac_embed, build_ping_embed
+from cogs.utils import build_ping_embed
 from cogs.palworld import (
     PalBreedModal, PalDexModal, PalWorkSelect,
     build_server_address_embed, build_server_embed, build_type_embed,
     server_configured, server_error_hint,
 )
-
-
-class TeamSelectView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=60)
-
-    @discord.ui.select(
-        cls=discord.ui.UserSelect,
-        placeholder="チーム分けするメンバーを選択（2人以上）",
-        min_values=2,
-        max_values=10,
-    )
-    async def select_members(self, interaction: discord.Interaction, select: discord.ui.UserSelect):
-        members = select.values
-        shuffled = list(members)
-        random.shuffle(shuffled)
-        mid = (len(shuffled) + 1) // 2
-        team_a = shuffled[:mid]
-        team_b = shuffled[mid:]
-        embed = discord.Embed(title="⚔️ チーム分け結果", color=discord.Color.blue())
-        embed.add_field(name="🔴 チームA", value="\n".join(f"・{m.display_name}" for m in team_a), inline=True)
-        embed.add_field(name="🔵 チームB", value="\n".join(f"・{m.display_name}" for m in team_b), inline=True)
-        if len(members) % 2 != 0:
-            embed.set_footer(text="人数が奇数のためチームAに1人多く振り分けました")
-        await interaction.response.send_message(embed=embed)
 
 
 class ApexStatsModal(discord.ui.Modal, title="👤 Apex プレイヤー統計"):
@@ -88,42 +61,7 @@ class PanelView(discord.ui.View):
     async def btn_apexstats(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(ApexStatsModal())
 
-    @discord.ui.button(label="⚔️ チーム分け", style=discord.ButtonStyle.primary, row=1)
-    async def btn_team(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_message(
-            "チーム分けするメンバーを選んでね！", view=TeamSelectView(), ephemeral=True
-        )
-
-    @discord.ui.button(label="🎰 ルーレット", style=discord.ButtonStyle.danger, row=1)
-    async def btn_roulette(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.defer(thinking=True)
-        await asyncio.sleep(2)
-        if interaction.user.id in TARGET_USER_IDS:
-            result = "🍺 次の集まりで全員分おごり確定！"
-        else:
-            result = random.choice(ROULETTES)
-        await interaction.followup.send(f"🎰 **結果発表！** {interaction.user.mention}\n{result}")
-
-    @discord.ui.button(label="🍟 マック", style=discord.ButtonStyle.success, row=1)
-    async def btn_mac(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.defer(thinking=True)
-        try:
-            embed = await build_mac_embed()
-            if embed:
-                await interaction.followup.send(embed=embed)
-            else:
-                await interaction.followup.send("❌ メニューの取得に失敗したよ")
-        except Exception as e:
-            await interaction.followup.send(f"❌ エラー: {e}")
-
-    @discord.ui.button(label="📊 サーバー統計", style=discord.ButtonStyle.secondary, row=2)
-    async def btn_stats(self, interaction: discord.Interaction, button: discord.ui.Button):
-        stats_cog = interaction.client.get_cog("Stats")
-        await interaction.response.send_message(
-            embed=build_stats_embed(interaction.guild, stats_cog.data if stats_cog else {})
-        )
-
-    @discord.ui.button(label="🌐 回線速度", style=discord.ButtonStyle.secondary, row=2)
+    @discord.ui.button(label="🌐 回線速度", style=discord.ButtonStyle.secondary, row=1)
     async def btn_ping(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(thinking=True)
         try:

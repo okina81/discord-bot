@@ -10,8 +10,6 @@ intents.members = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 EXTENSIONS = [
-    "cogs.levels",
-    "cogs.stats",
     "cogs.recruit",
     "cogs.pokemon",
     "cogs.apex",
