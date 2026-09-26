@@ -47,8 +47,10 @@ class GeminiOutputSource(discord.AudioSource):
         self._buffer = bytearray()
         self._lock = threading.Lock()
         self._rate_state = None
+        self._read_logged = False
 
     def push(self, pcm_24k_mono: bytes):
+        log.info("voice output: received %d bytes of audio from Gemini", len(pcm_24k_mono))
         converted, self._rate_state = audioop.ratecv(
             pcm_24k_mono, 2, 1, GEMINI_OUT_RATE, DISCORD_RATE, self._rate_state
         )
@@ -61,6 +63,9 @@ class GeminiOutputSource(discord.AudioSource):
             self._buffer.clear()
 
     def read(self) -> bytes:
+        if not self._read_logged:
+            self._read_logged = True
+            log.info("voice output: Discord player started pulling frames")
         with self._lock:
             if len(self._buffer) >= DISCORD_FRAME_BYTES:
                 chunk = bytes(self._buffer[:DISCORD_FRAME_BYTES])
@@ -94,6 +99,8 @@ class GeminiInputSink(voice_recv.AudioSink):
         pcm = data.pcm
         if not pcm:
             return
+        if user.id not in self._rate_states:
+            log.info("voice input: first packet received from %s (%d bytes)", user, len(pcm))
         mono = audioop.tomono(pcm, 2, 0.5, 0.5)
         state = self._rate_states.get(user.id)
         converted, state = audioop.ratecv(mono, 2, 1, DISCORD_RATE, GEMINI_IN_RATE, state)
@@ -141,6 +148,7 @@ class VoiceSession:
                 ),
             )
             async with gemini_client.aio.live.connect(model=LIVE_MODEL, config=config) as session:
+                log.info("voice session: connected to %s for guild %s", LIVE_MODEL, self.guild.id)
                 tasks = [
                     asyncio.create_task(self._send_loop(session)),
                     asyncio.create_task(self._recv_loop(session)),
@@ -164,15 +172,26 @@ class VoiceSession:
             await self.cog.leave(self.guild.id)
 
     async def _send_loop(self, session):
+        sent_count = 0
         while True:
             pcm = await self._send_queue.get()
             await session.send_realtime_input(
                 audio=types.Blob(data=pcm, mime_type=f"audio/pcm;rate={GEMINI_IN_RATE}")
             )
+            sent_count += 1
+            if sent_count == 1 or sent_count % 50 == 0:
+                log.info("voice send: %d chunks sent to Gemini so far", sent_count)
 
     async def _recv_loop(self, session):
         async for response in session.receive():
             sc = response.server_content
+            log.info(
+                "voice recv: setup_complete=%s server_content=%s interrupted=%s model_turn=%s",
+                response.setup_complete is not None,
+                sc is not None,
+                getattr(sc, "interrupted", None),
+                getattr(sc, "model_turn", None) is not None,
+            )
             if not sc:
                 continue
             if sc.interrupted:
@@ -181,6 +200,8 @@ class VoiceSession:
                 for part in sc.model_turn.parts:
                     if part.inline_data and part.inline_data.data:
                         self.output.push(part.inline_data.data)
+                    else:
+                        log.info("voice recv: part with no inline_data: %s", part)
 
     async def _idle_watch(self):
         while True:
