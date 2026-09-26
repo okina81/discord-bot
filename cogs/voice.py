@@ -20,13 +20,6 @@ STATS: collections.Counter = collections.Counter()
 _last_dave_error_log = 0.0
 
 
-def _log_future_error(future: "asyncio.Future"):
-    """run_coroutine_threadsafeの戻り値は誰も見ないと例外が握りつぶされるため、ログに残す。"""
-    exc = future.exception() if not future.cancelled() else None
-    if exc:
-        log.exception("voice input pipeline error", exc_info=exc)
-
-
 # discord-ext-voice-recvは1パケットのOpusデコードに失敗すると例外が
 # PacketRouterのスレッドまで伝播し、その場でリスニング全体を停止してしまう
 # (voice_recv/router.py の run() が例外を捕捉した後 stop_listening() を呼ぶ)。
@@ -102,6 +95,12 @@ FRAME_MS = 20
 DISCORD_FRAME_BYTES = int(DISCORD_RATE * 2 * 2 * FRAME_MS / 1000)  # 48kHz stereo 16bit, 20ms
 TRAILING_SILENCE_SECONDS = 1.0
 TRAILING_SILENCE = b"\x00" * int(GEMINI_IN_RATE * 2 * TRAILING_SILENCE_SECONDS)  # 16kHz mono 16bit
+MIX_FRAME_BYTES = int(GEMINI_IN_RATE * 2 * FRAME_MS / 1000)  # 16kHz mono 16bit, 20ms
+MIX_MAX_BUFFER_BYTES = MIX_FRAME_BYTES * 10  # 話者ごとの遅延を最大200msに抑える
+MIX_STALE_SECONDS = 0.06
+HOLD_MAX_BYTES = GEMINI_IN_RATE * 2 * 20  # Bot発話中に貯める音声は最大20秒
+HOLD_FLUSH_CHUNK_BYTES = GEMINI_IN_RATE * 2 // 10  # 100ms
+MODEL_SPEAKING_TIMEOUT = 3.0
 
 SYSTEM_INSTRUCTION = (
     "あなたはDiscordのボイスチャンネルに参加している、関西弁で話す明るい青年です。"
@@ -140,6 +139,12 @@ class GeminiOutputSource(discord.AudioSource):
         with self._lock:
             self._buffer.clear()
 
+    def has_pending_frame(self) -> bool:
+        # read()は1フレーム単位でしか取り出さないため、応答の末尾に1フレーム未満の端数が
+        # 残り続ける。バイト数で判定すると永遠に「再生中」と誤判定するのでフレーム単位で見る。
+        with self._lock:
+            return len(self._buffer) >= DISCORD_FRAME_BYTES
+
     def read(self) -> bytes:
         if not self._read_logged:
             self._read_logged = True
@@ -156,17 +161,61 @@ class GeminiOutputSource(discord.AudioSource):
         return False
 
 
-class GeminiInputSink(voice_recv.AudioSink):
-    """Discordの各話者の音声(48kHz stereo)をGemini向け16kHz monoへ変換して渡す。
+class AudioMixer:
+    """話者ごとの16kHz mono音声を貯め、20msごとに全員分を足し合わせた1フレームを取り出す。
 
-    write()はdiscord-ext-voice-recvのソケット受信スレッドから呼ばれるため、
-    asyncio.run_coroutine_threadsafeでイベントループ側へ橋渡しする。
+    Discordからは話者ごとに別々のパケットで届く。そのまま順番に送ると同時発話が
+    20ms単位で交互に継ぎはぎされ、Geminiには倍速の意味不明な音声に聞こえる
+    (実APIで日本語2人の同時発話がスペイン語として認識されることを確認)。
+    feed()は受信スレッドから、pop_frame()はイベントループから呼ばれる。
     """
 
-    def __init__(self, loop: asyncio.AbstractEventLoop, on_pcm):
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._buffers: dict[int, bytearray] = {}
+        self._last_feed: dict[int, float] = {}
+
+    def feed(self, user_id: int, pcm: bytes):
+        with self._lock:
+            buf = self._buffers.setdefault(user_id, bytearray())
+            buf.extend(pcm)
+            if len(buf) > MIX_MAX_BUFFER_BYTES:
+                del buf[:len(buf) - MIX_MAX_BUFFER_BYTES]
+            self._last_feed[user_id] = time.monotonic()
+
+    def pop_frame(self) -> bytes | None:
+        now = time.monotonic()
+        parts = []
+        with self._lock:
+            for user_id, buf in list(self._buffers.items()):
+                # 1フレームに満たない端数は、その話者の続きが来ないと分かるまで待つ
+                stale = now - self._last_feed.get(user_id, 0) > MIX_STALE_SECONDS
+                if len(buf) >= MIX_FRAME_BYTES or (buf and stale):
+                    take = bytes(buf[:MIX_FRAME_BYTES])
+                    del buf[:MIX_FRAME_BYTES]
+                    parts.append(take.ljust(MIX_FRAME_BYTES, b"\x00"))
+                if not buf and stale:
+                    del self._buffers[user_id]
+                    self._last_feed.pop(user_id, None)
+        if not parts:
+            return None
+        if len(parts) > 1:
+            STATS["overlap_frames"] += 1
+        mixed = parts[0]
+        for p in parts[1:]:
+            mixed = audioop.add(mixed, p, 2)  # 上限を超えた分はクリップされる
+        return mixed
+
+
+class GeminiInputSink(voice_recv.AudioSink):
+    """Discordの各話者の音声(48kHz stereo)を16kHz monoへ変換し、ミキサーに渡す。
+
+    write()はdiscord-ext-voice-recvの受信スレッドから呼ばれる。
+    """
+
+    def __init__(self, mixer: AudioMixer):
         super().__init__()
-        self._loop = loop
-        self._on_pcm = on_pcm
+        self._mixer = mixer
         self._rate_states = {}
 
     def wants_opus(self) -> bool:
@@ -185,8 +234,7 @@ class GeminiInputSink(voice_recv.AudioSink):
         state = self._rate_states.get(user.id)
         converted, state = audioop.ratecv(mono, 2, 1, DISCORD_RATE, GEMINI_IN_RATE, state)
         self._rate_states[user.id] = state
-        future = asyncio.run_coroutine_threadsafe(self._on_pcm(converted), self._loop)
-        future.add_done_callback(_log_future_error)
+        self._mixer.feed(user.id, converted)
 
     def cleanup(self):
         self._rate_states.clear()
@@ -207,17 +255,66 @@ class VoiceSession:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._resume_handle: str | None = None
         self._health_task: asyncio.Task | None = None
+        self._mix_task: asyncio.Task | None = None
+        self.mixer = AudioMixer()
+        self._held = bytearray()
+        self._model_speaking = False
+        self._last_model_audio = 0.0
 
     def start(self):
         self._loop = asyncio.get_running_loop()
         self._start_listening()
         self._start_playing()
         self._task = asyncio.create_task(self._run())
+        self._mix_task = asyncio.create_task(self._mix_loop())
         self._health_task = asyncio.create_task(self._health_log())
 
     def _start_listening(self):
-        sink = GeminiInputSink(self._loop, self._on_input_pcm)
+        sink = GeminiInputSink(self.mixer)
         self.voice_client.listen(sink, after=self._on_listen_stopped)
+
+    def _bot_speaking(self) -> bool:
+        # 生成中(turn_completeまで)か、手元の再生バッファが残っている間はBotが話している。
+        # turn_completeが来ないまま接続が切れても貯め込みっぱなしにならないよう、
+        # 最後の応答音声から一定時間経ったら生成中とはみなさない。
+        generating = self._model_speaking and time.monotonic() - self._last_model_audio < MODEL_SPEAKING_TIMEOUT
+        return generating or self.output.has_pending_frame()
+
+    async def _mix_loop(self):
+        # 20msごとに全話者をミックスした1フレームを取り出し、Geminiへの送信キューに積む。
+        # Botが話している間は、他の人の声で返事が途中で止められないよう送らずに貯めておき、
+        # 話し終わった直後にまとめて送る。
+        next_t = time.monotonic()
+        while True:
+            next_t += FRAME_MS / 1000
+            delay = next_t - time.monotonic()
+            if delay > 0:
+                await asyncio.sleep(delay)
+            elif delay < -0.2:
+                next_t = time.monotonic()
+            frame = self.mixer.pop_frame()
+            speaking = self._bot_speaking()
+            if frame is not None:
+                self.last_activity = time.monotonic()
+                STATS["mixed_frames"] += 1
+                if speaking:
+                    if len(self._held) < HOLD_MAX_BYTES:
+                        self._held.extend(frame)
+                        STATS["held_frames"] += 1
+                    continue
+            if not speaking and self._held:
+                self._flush_held()
+            if frame is not None:
+                self._send_queue.put_nowait(frame)
+
+    def _flush_held(self):
+        log.info("voice input: sending %.1fs of speech held while the bot was talking",
+                 len(self._held) / (GEMINI_IN_RATE * 2))
+        STATS["held_flushes"] += 1
+        # 1メッセージが大きくなりすぎないよう分割して積む
+        for i in range(0, len(self._held), HOLD_FLUSH_CHUNK_BYTES):
+            self._send_queue.put_nowait(bytes(self._held[i:i + HOLD_FLUSH_CHUNK_BYTES]))
+        self._held.clear()
 
     def _start_playing(self):
         self.voice_client.play(self.output, after=self._on_play_stopped)
@@ -266,17 +363,15 @@ class VoiceSession:
             log.info(
                 "voice health (last %ds): discord_pcm=%d dave_ok=%d dave_drop[not_ready=%d no_user=%d error=%d] "
                 "opus_corrupt=%d sent_chunks=%d stream_end=%d gemini_audio=%.1fs played=%.1fs "
-                "interrupted=%d turns=%d | playing=%s listening=%s connected=%s",
+                "interrupted=%d turns=%d mixed=%.1fs overlap=%.1fs held=%.1fs flushes=%d "
+                "| playing=%s listening=%s connected=%s",
                 HEALTH_LOG_INTERVAL, d["discord_pcm_packets"], d["dave_decrypted"], d["dave_drop_not_ready"],
                 d["dave_drop_no_user"], d["dave_drop_error"], d["opus_corrupt"], d["sent_chunks"],
                 d["stream_ends"], d["gemini_audio_bytes"] / (GEMINI_OUT_RATE * 2), d["played_frames"] * FRAME_MS / 1000,
-                d["interrupted"], d["turns_completed"],
+                d["interrupted"], d["turns_completed"], d["mixed_frames"] * FRAME_MS / 1000,
+                d["overlap_frames"] * FRAME_MS / 1000, d["held_frames"] * FRAME_MS / 1000, d["held_flushes"],
                 self.voice_client.is_playing(), self.voice_client.is_listening(), self.voice_client.is_connected(),
             )
-
-    async def _on_input_pcm(self, pcm: bytes):
-        self.last_activity = time.monotonic()
-        await self._send_queue.put(pcm)
 
     def _live_config(self) -> types.LiveConnectConfig:
         return types.LiveConnectConfig(
@@ -300,6 +395,7 @@ class VoiceSession:
             reconnect_times: list[float] = []
             while True:
                 resuming = self._resume_handle is not None
+                self._model_speaking = False  # 切断で途切れたターンのturn_completeは来ない
                 async with gemini_client.aio.live.connect(model=LIVE_MODEL, config=self._live_config()) as session:
                     log.info("voice session: connected to %s for guild %s (resumed=%s)",
                              LIVE_MODEL, self.guild.id, resuming)
@@ -402,12 +498,16 @@ class VoiceSession:
             return
         if sc.turn_complete:
             STATS["turns_completed"] += 1
+            self._model_speaking = False
         if sc.interrupted:
             STATS["interrupted"] += 1
+            self._model_speaking = False
             self.output.clear()
         if sc.model_turn:
             for part in sc.model_turn.parts:
                 if part.inline_data and part.inline_data.data:
+                    self._model_speaking = True
+                    self._last_model_audio = time.monotonic()
                     self.output.push(part.inline_data.data)
                 else:
                     log.debug("voice recv: part with no inline_data: %s", part)
@@ -429,8 +529,9 @@ class VoiceSession:
         if self._closed:
             return
         self._closed = True
-        if self._health_task:
-            self._health_task.cancel()
+        for task in (self._health_task, self._mix_task):
+            if task:
+                task.cancel()
         if notify_message:
             await self._safe_send(notify_message)
         current = asyncio.current_task()
