@@ -264,25 +264,35 @@ class VoiceSession:
                 log.info("voice send: %d chunks sent to Gemini so far", sent_count)
 
     async def _recv_loop(self, session):
-        async for response in session.receive():
-            sc = response.server_content
-            log.info(
-                "voice recv: setup_complete=%s server_content=%s interrupted=%s model_turn=%s",
-                response.setup_complete is not None,
-                sc is not None,
-                getattr(sc, "interrupted", None),
-                getattr(sc, "model_turn", None) is not None,
-            )
-            if not sc:
-                continue
-            if sc.interrupted:
-                self.output.clear()
-            if sc.model_turn:
-                for part in sc.model_turn.parts:
-                    if part.inline_data and part.inline_data.data:
-                        self.output.push(part.inline_data.data)
-                    else:
-                        log.info("voice recv: part with no inline_data: %s", part)
+        # session.receive()は1ターン分(turn_complete)を返すと終了するため、ターンごとに回し直す。
+        # 1件も受信できなかった場合は接続が閉じたとみなして抜け、空回りを防ぐ。
+        while True:
+            received = False
+            async for response in session.receive():
+                received = True
+                self._handle_response(response)
+            if not received:
+                raise ConnectionError("Gemini Live session closed")
+
+    def _handle_response(self, response):
+        sc = response.server_content
+        log.info(
+            "voice recv: setup_complete=%s server_content=%s interrupted=%s model_turn=%s",
+            response.setup_complete is not None,
+            sc is not None,
+            getattr(sc, "interrupted", None),
+            getattr(sc, "model_turn", None) is not None,
+        )
+        if not sc:
+            return
+        if sc.interrupted:
+            self.output.clear()
+        if sc.model_turn:
+            for part in sc.model_turn.parts:
+                if part.inline_data and part.inline_data.data:
+                    self.output.push(part.inline_data.data)
+                else:
+                    log.info("voice recv: part with no inline_data: %s", part)
 
     async def _idle_watch(self):
         while True:
