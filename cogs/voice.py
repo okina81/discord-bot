@@ -73,19 +73,23 @@ IDLE_TIMEOUT_SECONDS = 300
 IDLE_CHECK_INTERVAL = 30
 RECONNECT_GRACE_SECONDS = 15
 INPUT_PAUSE_SECONDS = 0.5
+RECONNECT_WINDOW_SECONDS = 60
+MAX_RECONNECTS_PER_WINDOW = 3
 
 DISCORD_RATE = 48000
 GEMINI_IN_RATE = 16000
 GEMINI_OUT_RATE = 24000
 FRAME_MS = 20
 DISCORD_FRAME_BYTES = int(DISCORD_RATE * 2 * 2 * FRAME_MS / 1000)  # 48kHz stereo 16bit, 20ms
+TRAILING_SILENCE_SECONDS = 1.0
+TRAILING_SILENCE = b"\x00" * int(GEMINI_IN_RATE * 2 * TRAILING_SILENCE_SECONDS)  # 16kHz mono 16bit
 
 SYSTEM_INSTRUCTION = (
     "あなたはDiscordのボイスチャンネルに参加している、関西弁で話す明るい青年です。"
     "常にノリの良い関西弁(大阪弁)で、テンション高めにカジュアルに、簡潔に会話してください。"
     "標準語や丁寧語には絶対に戻らないでください。"
 )
-GREETING_PROMPT = "今ボイスチャンネルに参加したところです。みんなに一言だけ短く挨拶してください。"
+GREETING_PROMPT = "今ボイスチャンネルに参加したところです。関西弁で、みんなに一言だけ短く挨拶してください。"
 
 
 class GeminiOutputSource(discord.AudioSource):
@@ -102,7 +106,7 @@ class GeminiOutputSource(discord.AudioSource):
         self._read_logged = False
 
     def push(self, pcm_24k_mono: bytes):
-        log.info("voice output: received %d bytes of audio from Gemini", len(pcm_24k_mono))
+        log.debug("voice output: received %d bytes of audio from Gemini", len(pcm_24k_mono))
         converted, self._rate_state = audioop.ratecv(
             pcm_24k_mono, 2, 1, GEMINI_OUT_RATE, DISCORD_RATE, self._rate_state
         )
@@ -177,6 +181,7 @@ class VoiceSession:
         self._task: asyncio.Task | None = None
         self._closed = False
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._resume_handle: str | None = None
 
     def start(self):
         self._loop = asyncio.get_running_loop()
@@ -214,49 +219,77 @@ class VoiceSession:
         self.last_activity = time.monotonic()
         await self._send_queue.put(pcm)
 
+    def _live_config(self) -> types.LiveConnectConfig:
+        return types.LiveConnectConfig(
+            response_modalities=["AUDIO"],
+            system_instruction=SYSTEM_INSTRUCTION,
+            speech_config=types.SpeechConfig(
+                voice_config=types.VoiceConfig(
+                    prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=VOICE_NAME)
+                )
+            ),
+            # 圧縮なしの音声セッションは最大15分で打ち切られるため、古い履歴を圧縮して延命する。
+            context_window_compression=types.ContextWindowCompressionConfig(
+                sliding_window=types.SlidingWindow(),
+            ),
+            # 1本のWebSocket接続は約10分で切られる。再開ハンドルで文脈を保ったまま繋ぎ直す。
+            session_resumption=types.SessionResumptionConfig(handle=self._resume_handle),
+        )
+
     async def _run(self):
         try:
-            config = types.LiveConnectConfig(
-                response_modalities=["AUDIO"],
-                system_instruction=SYSTEM_INSTRUCTION,
-                speech_config=types.SpeechConfig(
-                    voice_config=types.VoiceConfig(
-                        prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=VOICE_NAME)
-                    )
-                ),
-            )
-            async with gemini_client.aio.live.connect(model=LIVE_MODEL, config=config) as session:
-                log.info("voice session: connected to %s for guild %s", LIVE_MODEL, self.guild.id)
-                await session.send_client_content(
-                    turns=types.Content(role="user", parts=[types.Part(text=GREETING_PROMPT)]),
-                    turn_complete=True,
-                )
-                tasks = [
-                    asyncio.create_task(self._send_loop(session)),
-                    asyncio.create_task(self._recv_loop(session)),
-                    asyncio.create_task(self._idle_watch()),
-                ]
-                try:
-                    done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-                finally:
-                    for t in tasks:
-                        t.cancel()
-                    await asyncio.gather(*tasks, return_exceptions=True)
-                for t in done:
-                    exc = t.exception()
-                    if exc:
-                        raise exc
+            reconnect_times: list[float] = []
+            while True:
+                resuming = self._resume_handle is not None
+                async with gemini_client.aio.live.connect(model=LIVE_MODEL, config=self._live_config()) as session:
+                    log.info("voice session: connected to %s for guild %s (resumed=%s)",
+                             LIVE_MODEL, self.guild.id, resuming)
+                    if not resuming:
+                        await session.send_client_content(
+                            turns=types.Content(role="user", parts=[types.Part(text=GREETING_PROMPT)]),
+                            turn_complete=True,
+                        )
+                    ended_by_idle = await self._run_connection(session)
+                if ended_by_idle:
+                    return
+
+                now = time.monotonic()
+                reconnect_times = [t for t in reconnect_times if now - t < RECONNECT_WINDOW_SECONDS]
+                reconnect_times.append(now)
+                if self._resume_handle is None or len(reconnect_times) > MAX_RECONNECTS_PER_WINDOW:
+                    raise RuntimeError("Geminiとの接続が切れて再接続できなかった")
+                log.info("voice session: connection ended, reconnecting with resumption handle")
         except asyncio.CancelledError:
             raise
         except Exception as e:
+            log.exception("voice session: fatal error")
             await self._safe_send(f"❌ ボイスセッションでエラーが発生したよ: {e}")
         finally:
             await self.cog.leave(self.guild.id)
 
+    async def _run_connection(self, session) -> bool:
+        """1本の接続を動かす。アイドルで終了したらTrue、接続が切れたらFalseを返す。"""
+        send_task = asyncio.create_task(self._send_loop(session))
+        recv_task = asyncio.create_task(self._recv_loop(session))
+        idle_task = asyncio.create_task(self._idle_watch())
+        tasks = [send_task, recv_task, idle_task]
+        try:
+            done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            for t in tasks:
+                t.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+        if idle_task in done:
+            return True
+        for t in done:
+            if t.exception():
+                log.warning("voice session: connection ended: %r", t.exception())
+        return False
+
     async def _send_loop(self, session):
-        # Discordのクライアントは無音時にパケット自体を送らないため、Gemini側からは
-        # 音声が途中で途切れたようにしか見えず発話の終わりを判定できない。
-        # 入力が途切れたらaudio_stream_endを送り、発話の確定と応答生成を促す。
+        # Discordのクライアントは無音時にパケット自体を送らないため、Geminiの発話検知は
+        # 「話し終わり」を判定できず応答を生成しない (audio_stream_end だけでは確定しない
+        # ことを実APIで確認済み)。入力が途切れたら無音を送ってから audio_stream_end を送る。
         sent_count = 0
         streaming = False
         while True:
@@ -264,9 +297,12 @@ class VoiceSession:
                 pcm = await asyncio.wait_for(self._send_queue.get(), timeout=INPUT_PAUSE_SECONDS)
             except asyncio.TimeoutError:
                 if streaming:
+                    await session.send_realtime_input(
+                        audio=types.Blob(data=TRAILING_SILENCE, mime_type=f"audio/pcm;rate={GEMINI_IN_RATE}")
+                    )
                     await session.send_realtime_input(audio_stream_end=True)
                     streaming = False
-                    log.info("voice send: input paused, sent audio_stream_end")
+                    log.info("voice send: input paused, sent trailing silence + audio_stream_end")
                 continue
             await session.send_realtime_input(
                 audio=types.Blob(data=pcm, mime_type=f"audio/pcm;rate={GEMINI_IN_RATE}")
@@ -274,7 +310,7 @@ class VoiceSession:
             streaming = True
             sent_count += 1
             if sent_count == 1 or sent_count % 50 == 0:
-                log.info("voice send: %d chunks sent to Gemini so far", sent_count)
+                log.debug("voice send: %d chunks sent to Gemini so far", sent_count)
 
     async def _recv_loop(self, session):
         # session.receive()は1ターン分(turn_complete)を返すと終了するため、ターンごとに回し直す。
@@ -288,8 +324,13 @@ class VoiceSession:
                 raise ConnectionError("Gemini Live session closed")
 
     def _handle_response(self, response):
+        update = response.session_resumption_update
+        if update and update.resumable and update.new_handle:
+            self._resume_handle = update.new_handle
+        if response.go_away:
+            log.info("voice session: server sent GoAway (time_left=%s)", response.go_away.time_left)
         sc = response.server_content
-        log.info(
+        log.debug(
             "voice recv: setup_complete=%s server_content=%s interrupted=%s model_turn=%s",
             response.setup_complete is not None,
             sc is not None,
@@ -305,7 +346,7 @@ class VoiceSession:
                 if part.inline_data and part.inline_data.data:
                     self.output.push(part.inline_data.data)
                 else:
-                    log.info("voice recv: part with no inline_data: %s", part)
+                    log.debug("voice recv: part with no inline_data: %s", part)
 
     async def _idle_watch(self):
         while True:
