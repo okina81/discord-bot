@@ -1,5 +1,6 @@
 import asyncio
 import audioop
+import collections
 import logging
 import threading
 import time
@@ -12,6 +13,11 @@ from google.genai import types
 from config import GEMINI_API_KEY, gemini_client
 
 log = logging.getLogger(__name__)
+
+# パイプライン各段の通過件数。定期的に1行のヘルスログとして出し、どこで止まったかを切り分ける。
+# 複数スレッドから加算されるが、診断用なので多少の数え漏れは許容する。
+STATS: collections.Counter = collections.Counter()
+_last_dave_error_log = 0.0
 
 
 def _log_future_error(future: "asyncio.Future"):
@@ -33,7 +39,8 @@ def _resilient_decode_packet(self, packet):
     try:
         return _original_decode_packet(self, packet)
     except discord.opus.OpusError:
-        log.warning("voice recv: dropped a corrupted opus packet (ssrc=%s)", self.ssrc)
+        STATS["opus_corrupt"] += 1
+        log.debug("voice recv: dropped a corrupted opus packet (ssrc=%s)", self.ssrc)
         return packet, b""
 
 
@@ -50,18 +57,28 @@ _original_push_packet = voice_recv_opus.PacketDecoder.push_packet
 
 
 def _dave_decrypting_push_packet(self, packet):
+    global _last_dave_error_log
     data = getattr(packet, "decrypted_data", None)
     if data and data.endswith(DAVE_FRAME_MARKER):
         vc = self.sink.voice_client
         session = getattr(getattr(vc, "_connection", None), "dave_session", None)
         user_id = vc._get_id_from_ssrc(self.ssrc) if vc else None
-        if session is None or not session.ready or user_id is None:
+        if session is None or not session.ready:
+            STATS["dave_drop_not_ready"] += 1
+            return
+        if user_id is None:
+            STATS["dave_drop_no_user"] += 1
             return
         try:
             packet.decrypted_data = session.decrypt(user_id, davey.MediaType.audio, data)
         except Exception as e:
-            log.debug("voice recv: DAVE decrypt failed (ssrc=%s): %r", self.ssrc, e)
+            STATS["dave_drop_error"] += 1
+            now = time.monotonic()
+            if now - _last_dave_error_log > 30:
+                _last_dave_error_log = now
+                log.warning("voice recv: DAVE decrypt failed (ssrc=%s user=%s): %r", self.ssrc, user_id, e)
             return
+        STATS["dave_decrypted"] += 1
     _original_push_packet(self, packet)
 
 
@@ -75,6 +92,8 @@ RECONNECT_GRACE_SECONDS = 15
 INPUT_PAUSE_SECONDS = 0.5
 RECONNECT_WINDOW_SECONDS = 60
 MAX_RECONNECTS_PER_WINDOW = 3
+RESTART_MAX_WAIT_SECONDS = 30
+HEALTH_LOG_INTERVAL = 30
 
 DISCORD_RATE = 48000
 GEMINI_IN_RATE = 16000
@@ -86,6 +105,8 @@ TRAILING_SILENCE = b"\x00" * int(GEMINI_IN_RATE * 2 * TRAILING_SILENCE_SECONDS) 
 
 SYSTEM_INSTRUCTION = (
     "あなたはDiscordのボイスチャンネルに参加している、関西弁で話す明るい青年です。"
+    "必ず日本語(関西弁)だけで話してください。相手が英語など日本語以外の言語で話しかけてきても、"
+    "返事は必ず日本語にし、日本語以外の言語に切り替えないでください。"
     "常にノリの良い関西弁(大阪弁)で、テンション高めにカジュアルに、簡潔に会話してください。"
     "標準語や丁寧語には絶対に戻らないでください。"
 )
@@ -106,6 +127,7 @@ class GeminiOutputSource(discord.AudioSource):
         self._read_logged = False
 
     def push(self, pcm_24k_mono: bytes):
+        STATS["gemini_audio_bytes"] += len(pcm_24k_mono)
         log.debug("voice output: received %d bytes of audio from Gemini", len(pcm_24k_mono))
         converted, self._rate_state = audioop.ratecv(
             pcm_24k_mono, 2, 1, GEMINI_OUT_RATE, DISCORD_RATE, self._rate_state
@@ -126,6 +148,7 @@ class GeminiOutputSource(discord.AudioSource):
             if len(self._buffer) >= DISCORD_FRAME_BYTES:
                 chunk = bytes(self._buffer[:DISCORD_FRAME_BYTES])
                 del self._buffer[:DISCORD_FRAME_BYTES]
+                STATS["played_frames"] += 1
                 return chunk
         return b"\x00" * DISCORD_FRAME_BYTES
 
@@ -155,6 +178,7 @@ class GeminiInputSink(voice_recv.AudioSink):
         pcm = data.pcm
         if not pcm:
             return
+        STATS["discord_pcm_packets"] += 1
         if user.id not in self._rate_states:
             log.info("voice input: first packet received from %s (%d bytes)", user, len(pcm))
         mono = audioop.tomono(pcm, 2, 0.5, 0.5)
@@ -182,38 +206,73 @@ class VoiceSession:
         self._closed = False
         self._loop: asyncio.AbstractEventLoop | None = None
         self._resume_handle: str | None = None
+        self._health_task: asyncio.Task | None = None
 
     def start(self):
         self._loop = asyncio.get_running_loop()
         self._start_listening()
-        self.voice_client.play(self.output)
+        self._start_playing()
         self._task = asyncio.create_task(self._run())
+        self._health_task = asyncio.create_task(self._health_log())
 
     def _start_listening(self):
         sink = GeminiInputSink(self._loop, self._on_input_pcm)
         self.voice_client.listen(sink, after=self._on_listen_stopped)
 
-    def _on_listen_stopped(self, error: Exception | None):
-        # discord-ext-voice-recvのリーダースレッドから呼ばれるコールバック。
-        # 通常の切断(close()経由)ならself._closedが立っているので何もしない。
-        # 想定外にリスニングが停止した場合は音声入力が完全に無音になってしまうため、
-        # 自動で再度listen()し直す。
-        if self._closed:
-            return
-        if error:
-            log.warning("voice listen: stopped unexpectedly (%r), restarting", error)
-        else:
-            log.warning("voice listen: stopped unexpectedly, restarting")
-        asyncio.run_coroutine_threadsafe(self._restart_listening(), self._loop)
+    def _start_playing(self):
+        self.voice_client.play(self.output, after=self._on_play_stopped)
 
-    async def _restart_listening(self):
+    # 受信(voice_recvのリーダー)も再生(discord.pyのAudioPlayer)も、内部で例外が起きると
+    # スレッドごと終了し、以後は二度と動かない。どちらも止まれば通話は無反応になるため、
+    # 停止を検知したら自動で立ち上げ直す。コールバックは各スレッドから呼ばれる。
+    def _on_listen_stopped(self, error: Exception | None):
         if self._closed:
             return
-        try:
-            self._start_listening()
-            log.info("voice listen: restarted successfully")
-        except Exception:
-            log.exception("voice listen: failed to restart")
+        log.warning("voice listen: stopped unexpectedly (%r), restarting", error)
+        asyncio.run_coroutine_threadsafe(
+            self._restart("listen", self.voice_client.is_listening, self._start_listening), self._loop
+        )
+
+    def _on_play_stopped(self, error: Exception | None):
+        if self._closed:
+            return
+        log.warning("voice play: stopped unexpectedly (%r), restarting", error)
+        asyncio.run_coroutine_threadsafe(
+            self._restart("play", self.voice_client.is_playing, self._start_playing), self._loop
+        )
+
+    async def _restart(self, name: str, is_running, start):
+        # Discordとの再接続中はlisten()/play()が「未接続」で失敗するため、接続が戻るまで待つ。
+        for _ in range(RESTART_MAX_WAIT_SECONDS):
+            await asyncio.sleep(1)
+            if self._closed or is_running():
+                return
+            if not self.voice_client.is_connected():
+                continue
+            try:
+                start()
+                log.info("voice %s: restarted successfully", name)
+                return
+            except Exception:
+                log.exception("voice %s: failed to restart", name)
+        log.error("voice %s: gave up restarting after %ds", name, RESTART_MAX_WAIT_SECONDS)
+
+    async def _health_log(self):
+        last = collections.Counter(STATS)
+        while True:
+            await asyncio.sleep(HEALTH_LOG_INTERVAL)
+            d = STATS - last
+            last = collections.Counter(STATS)
+            log.info(
+                "voice health (last %ds): discord_pcm=%d dave_ok=%d dave_drop[not_ready=%d no_user=%d error=%d] "
+                "opus_corrupt=%d sent_chunks=%d stream_end=%d gemini_audio=%.1fs played=%.1fs "
+                "interrupted=%d turns=%d | playing=%s listening=%s connected=%s",
+                HEALTH_LOG_INTERVAL, d["discord_pcm_packets"], d["dave_decrypted"], d["dave_drop_not_ready"],
+                d["dave_drop_no_user"], d["dave_drop_error"], d["opus_corrupt"], d["sent_chunks"],
+                d["stream_ends"], d["gemini_audio_bytes"] / (GEMINI_OUT_RATE * 2), d["played_frames"] * FRAME_MS / 1000,
+                d["interrupted"], d["turns_completed"],
+                self.voice_client.is_playing(), self.voice_client.is_listening(), self.voice_client.is_connected(),
+            )
 
     async def _on_input_pcm(self, pcm: bytes):
         self.last_activity = time.monotonic()
@@ -301,6 +360,7 @@ class VoiceSession:
                         audio=types.Blob(data=TRAILING_SILENCE, mime_type=f"audio/pcm;rate={GEMINI_IN_RATE}")
                     )
                     await session.send_realtime_input(audio_stream_end=True)
+                    STATS["stream_ends"] += 1
                     streaming = False
                     log.info("voice send: input paused, sent trailing silence + audio_stream_end")
                 continue
@@ -308,6 +368,7 @@ class VoiceSession:
                 audio=types.Blob(data=pcm, mime_type=f"audio/pcm;rate={GEMINI_IN_RATE}")
             )
             streaming = True
+            STATS["sent_chunks"] += 1
             sent_count += 1
             if sent_count == 1 or sent_count % 50 == 0:
                 log.debug("voice send: %d chunks sent to Gemini so far", sent_count)
@@ -339,7 +400,10 @@ class VoiceSession:
         )
         if not sc:
             return
+        if sc.turn_complete:
+            STATS["turns_completed"] += 1
         if sc.interrupted:
+            STATS["interrupted"] += 1
             self.output.clear()
         if sc.model_turn:
             for part in sc.model_turn.parts:
@@ -365,6 +429,8 @@ class VoiceSession:
         if self._closed:
             return
         self._closed = True
+        if self._health_task:
+            self._health_task.cancel()
         if notify_message:
             await self._safe_send(notify_message)
         current = asyncio.current_task()
