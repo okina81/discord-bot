@@ -2,6 +2,7 @@ import asyncio
 import audioop
 import collections
 import logging
+import re
 import threading
 import time
 
@@ -79,6 +80,11 @@ voice_recv_opus.PacketDecoder.push_packet = _dave_decrypting_push_packet
 
 LIVE_MODEL = "gemini-3.8-live"
 VOICE_NAME = "Puck"  # 明るい・アップビートな男性声
+# Liveモデルはクローン音声に対応しておらず、声のIDを渡しても黙って既定の声で話すことを
+# 実APIで確認した。クローン音声を使うときはLiveの音声を捨て、Liveの発話の文字起こしを
+# クローン音声に対応したTTSモデルで読み上げ直す。
+TTS_MODEL = "gemini-3.8-flash-tts"
+TTS_SENTENCE_END = re.compile(r".+?(?:[。！？!?…]+|\n+)")
 IDLE_TIMEOUT_SECONDS = 300
 IDLE_CHECK_INTERVAL = 30
 RECONNECT_GRACE_SECONDS = 15
@@ -144,13 +150,6 @@ GREETING_PROMPT = (
     "今ボイスチャンネルに参加したところです。関西弁で、自分の名前を名乗りながら"
     "みんなに一言だけ短く挨拶してください。"
 )
-
-
-def _voice_config() -> types.VoiceConfig:
-    # tools/create_voice.py で登録したクローン音声のIDが設定されていればその声で話す
-    if GEMINI_VOICE_ID:
-        return types.VoiceConfig(voice=GEMINI_VOICE_ID)
-    return types.VoiceConfig(prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=VOICE_NAME))
 
 
 class GeminiOutputSource(discord.AudioSource):
@@ -300,6 +299,12 @@ class VoiceSession:
         self._held = bytearray()
         self._model_speaking = False
         self._last_model_audio = 0.0
+        # クローン音声(TTS読み上げ)用。GEMINI_VOICE_ID未設定なら使わない
+        self._tts_queue: asyncio.Queue[str] = asyncio.Queue()
+        self._tts_text = ""
+        self._tts_inflight = False
+        self._tts_epoch = 0
+        self._tts_task: asyncio.Task | None = None
 
     def start(self):
         self._loop = asyncio.get_running_loop()
@@ -308,6 +313,8 @@ class VoiceSession:
         self._task = asyncio.create_task(self._run())
         self._mix_task = asyncio.create_task(self._mix_loop())
         self._health_task = asyncio.create_task(self._health_log())
+        if GEMINI_VOICE_ID:
+            self._tts_task = asyncio.create_task(self._tts_loop())
 
     def _start_listening(self):
         sink = GeminiInputSink(self.mixer)
@@ -318,7 +325,9 @@ class VoiceSession:
         # turn_completeが来ないまま接続が切れても貯め込みっぱなしにならないよう、
         # 最後の応答音声から一定時間経ったら生成中とはみなさない。
         generating = self._model_speaking and time.monotonic() - self._last_model_audio < MODEL_SPEAKING_TIMEOUT
-        return generating or self.output.has_pending_frame()
+        # TTS読み上げ中は、Liveの生成が終わっていても読み上げ待ちの文が残っている間は話している
+        synthesizing = self._tts_inflight or not self._tts_queue.empty()
+        return generating or synthesizing or self.output.has_pending_frame()
 
     async def _mix_loop(self):
         # 20msごとに全話者をミックスした1フレームを取り出し、Geminiへの送信キューに積む。
@@ -420,7 +429,11 @@ class VoiceSession:
             # 何を聞き取り何を話したかをログに出し、会話がズレたときに聞き間違いか判別できるようにする
             input_audio_transcription=types.AudioTranscriptionConfig(),
             output_audio_transcription=types.AudioTranscriptionConfig(),
-            speech_config=types.SpeechConfig(voice_config=_voice_config()),
+            speech_config=types.SpeechConfig(
+                voice_config=types.VoiceConfig(
+                    prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=VOICE_NAME)
+                )
+            ),
             # 圧縮なしの音声セッションは最大15分で打ち切られるため、古い履歴を圧縮して延命する。
             context_window_compression=types.ContextWindowCompressionConfig(
                 sliding_window=types.SlidingWindow(),
@@ -437,7 +450,8 @@ class VoiceSession:
                 self._model_speaking = False  # 切断で途切れたターンのturn_completeは来ない
                 async with gemini_client.aio.live.connect(model=LIVE_MODEL, config=self._live_config()) as session:
                     log.info("voice session: connected to %s for guild %s (resumed=%s voice=%s)",
-                             LIVE_MODEL, self.guild.id, resuming, GEMINI_VOICE_ID or VOICE_NAME)
+                             LIVE_MODEL, self.guild.id, resuming,
+                             f"{TTS_MODEL}:{GEMINI_VOICE_ID}" if GEMINI_VOICE_ID else VOICE_NAME)
                     if not resuming:
                         await session.send_client_content(
                             turns=types.Content(role="user", parts=[types.Part(text=GREETING_PROMPT)]),
@@ -540,14 +554,19 @@ class VoiceSession:
         if sc.output_transcription and sc.output_transcription.text:
             self._log_heard()
             self._said_text.append(sc.output_transcription.text)
+            if GEMINI_VOICE_ID:
+                self._tts_feed(sc.output_transcription.text)
         if sc.turn_complete:
             STATS["turns_completed"] += 1
             self._model_speaking = False
             self._log_heard()
             self._log_said("")
+            if GEMINI_VOICE_ID:
+                self._tts_feed("", flush=True)
         if sc.interrupted:
             STATS["interrupted"] += 1
             self._model_speaking = False
+            self._tts_cancel()
             self.output.clear()
             self._log_said(" (interrupted)")
         if sc.model_turn:
@@ -555,9 +574,63 @@ class VoiceSession:
                 if part.inline_data and part.inline_data.data:
                     self._model_speaking = True
                     self._last_model_audio = time.monotonic()
-                    self.output.push(part.inline_data.data)
+                    if not GEMINI_VOICE_ID:  # クローン音声時はLiveの声を使わずTTSで読み直す
+                        self.output.push(part.inline_data.data)
                 else:
                     log.debug("voice recv: part with no inline_data: %s", part)
+
+    def _tts_feed(self, text: str, flush: bool = False):
+        # 文字起こしは細切れで届くため、文の区切りまで貯めてから1文ずつ読み上げに回す
+        self._tts_text += text
+        end = 0
+        for m in TTS_SENTENCE_END.finditer(self._tts_text):
+            self._tts_enqueue(m.group())
+            end = m.end()
+        self._tts_text = self._tts_text[end:]
+        if flush:
+            self._tts_enqueue(self._tts_text)
+            self._tts_text = ""
+
+    def _tts_enqueue(self, sentence: str):
+        sentence = sentence.strip()
+        if sentence:
+            self._tts_queue.put_nowait(sentence)
+
+    def _tts_cancel(self):
+        self._tts_text = ""
+        self._tts_epoch += 1  # 読み上げ中の文は、以降の音声を再生バッファに積まない
+        while not self._tts_queue.empty():
+            self._tts_queue.get_nowait()
+
+    async def _tts_loop(self):
+        config = types.GenerateContentConfig(
+            response_modalities=["AUDIO"],
+            speech_config=types.SpeechConfig(voice_config=types.VoiceConfig(voice=GEMINI_VOICE_ID)),
+        )
+        while True:
+            sentence = await self._tts_queue.get()
+            epoch = self._tts_epoch
+            self._tts_inflight = True
+            started = time.monotonic()
+            try:
+                stream = await gemini_client.aio.models.generate_content_stream(
+                    model=TTS_MODEL, contents=sentence, config=config)
+                async for chunk in stream:
+                    if epoch != self._tts_epoch:
+                        break
+                    content = chunk.candidates[0].content if chunk.candidates else None
+                    for part in content.parts if content and content.parts else []:
+                        if part.inline_data and part.inline_data.data:
+                            self.output.push(part.inline_data.data)
+                STATS["tts_sentences"] += 1
+                log.debug("voice tts: %.2fs for %r", time.monotonic() - started, sentence)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                STATS["tts_errors"] += 1
+                log.warning("voice tts: failed to synthesize %r: %r", sentence, e)
+            finally:
+                self._tts_inflight = False
 
     def _log_heard(self):
         if self._heard_text:
@@ -586,7 +659,7 @@ class VoiceSession:
         if self._closed:
             return
         self._closed = True
-        for task in (self._health_task, self._mix_task):
+        for task in (self._health_task, self._mix_task, self._tts_task):
             if task:
                 task.cancel()
         if notify_message:
