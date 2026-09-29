@@ -82,20 +82,24 @@ VOICE_NAME = "Puck"  # 明るい・アップビートな男性声
 IDLE_TIMEOUT_SECONDS = 300
 IDLE_CHECK_INTERVAL = 30
 RECONNECT_GRACE_SECONDS = 15
-INPUT_PAUSE_SECONDS = 0.5
+# 入力がこの秒数途切れたら話し終わりとみなす。0.5秒だと「昨日さ、」のような言い淀みの
+# 途中でBotが返事を始め、話の前半だけに答えてしまうことを実APIで確認したため長めにする。
+INPUT_PAUSE_SECONDS = 1.0
 RECONNECT_WINDOW_SECONDS = 60
 MAX_RECONNECTS_PER_WINDOW = 3
 RESTART_MAX_WAIT_SECONDS = 30
 HEALTH_LOG_INTERVAL = 30
 
 DISCORD_RATE = 48000
-GEMINI_IN_RATE = 16000
+# audioop.ratecvはローパスフィルタなしの線形補間で、16kHzへ落とすと折り返しノイズで
+# 聞き取り精度が下がる。48kHzのまま送り、リサンプリングはGemini側に任せる。
+GEMINI_IN_RATE = DISCORD_RATE
 GEMINI_OUT_RATE = 24000
 FRAME_MS = 20
 DISCORD_FRAME_BYTES = int(DISCORD_RATE * 2 * 2 * FRAME_MS / 1000)  # 48kHz stereo 16bit, 20ms
 TRAILING_SILENCE_SECONDS = 1.0
-TRAILING_SILENCE = b"\x00" * int(GEMINI_IN_RATE * 2 * TRAILING_SILENCE_SECONDS)  # 16kHz mono 16bit
-MIX_FRAME_BYTES = int(GEMINI_IN_RATE * 2 * FRAME_MS / 1000)  # 16kHz mono 16bit, 20ms
+TRAILING_SILENCE = b"\x00" * int(GEMINI_IN_RATE * 2 * TRAILING_SILENCE_SECONDS)  # mono 16bit
+MIX_FRAME_BYTES = int(GEMINI_IN_RATE * 2 * FRAME_MS / 1000)  # mono 16bit, 20ms
 MIX_MAX_BUFFER_BYTES = MIX_FRAME_BYTES * 10  # 話者ごとの遅延を最大200msに抑える
 MIX_STALE_SECONDS = 0.06
 HOLD_MAX_BYTES = GEMINI_IN_RATE * 2 * 20  # Bot発話中に貯める音声は最大20秒
@@ -121,9 +125,19 @@ SYSTEM_INSTRUCTION = (
     + "自己紹介を頼まれたときや、名前・年齢などを聞かれたときは、このプロフィールに沿って答えてください。"
     "プロフィールにないことを聞かれたら、キャラクターに合う範囲で自然に答えてください。"
     "自分がAIやGeminiであるとは名乗らず、このキャラクターとして振る舞ってください。"
+    "音声は聞き間違えやすいので、「キマボット」「いまきた」など名前に似た音で呼ばれたら自分のことだと思ってください。\n"
+    "会話のコツ:\n"
+    "- 相手が今言ったことに必ず具体的に反応してください。話題を勝手に変えたり、一般論だけで返したりしないでください。\n"
+    "- 相づちだけで終わらず、自分の体験談や意見を一言添えて話を広げてください。\n"
+    "- ときどき相手に質問を返して、相手がもっと話せるようにしてください。毎回質問で終わる必要はありません。\n"
+    "- 面白いことにはよく笑うなど、ゲラで優しい性格を出してください。\n"
+    "- 音声がよく聞き取れなかったり、意味が分からないときは、推測で答えずに「え、今なんて?」と聞き返してください。\n"
+    "- 複数人が参加しているので、話しかけられていない独り言や雑音には無理に反応しなくて構いません。\n"
+    "- 返事は1〜3文くらいの、会話らしい長さにしてください。一人で長々と語らないでください。\n"
+    "- 相手の名前は分からないので、「〇〇さん」のような伏せ字は使わず、名前を呼ばずに話してください。\n"
     "必ず日本語(関西弁)だけで話してください。相手が英語など日本語以外の言語で話しかけてきても、"
     "返事は必ず日本語にし、日本語以外の言語に切り替えないでください。"
-    "常にノリの良い関西弁(大阪弁)で、テンション高めにカジュアルに、簡潔に会話してください。"
+    "常にノリの良い関西弁(神戸寄りの関西弁)で、テンション高めにカジュアルに会話してください。"
     "標準語や丁寧語には絶対に戻らないでください。"
 )
 GREETING_PROMPT = (
@@ -228,7 +242,7 @@ class AudioMixer:
 
 
 class GeminiInputSink(voice_recv.AudioSink):
-    """Discordの各話者の音声(48kHz stereo)を16kHz monoへ変換し、ミキサーに渡す。
+    """Discordの各話者の音声(48kHz stereo)をmonoへ変換し、ミキサーに渡す。
 
     write()はdiscord-ext-voice-recvの受信スレッドから呼ばれる。
     """
@@ -236,7 +250,7 @@ class GeminiInputSink(voice_recv.AudioSink):
     def __init__(self, mixer: AudioMixer):
         super().__init__()
         self._mixer = mixer
-        self._rate_states = {}
+        self._seen_users = set()
 
     def wants_opus(self) -> bool:
         return False
@@ -248,16 +262,13 @@ class GeminiInputSink(voice_recv.AudioSink):
         if not pcm:
             return
         STATS["discord_pcm_packets"] += 1
-        if user.id not in self._rate_states:
+        if user.id not in self._seen_users:
+            self._seen_users.add(user.id)
             log.info("voice input: first packet received from %s (%d bytes)", user, len(pcm))
-        mono = audioop.tomono(pcm, 2, 0.5, 0.5)
-        state = self._rate_states.get(user.id)
-        converted, state = audioop.ratecv(mono, 2, 1, DISCORD_RATE, GEMINI_IN_RATE, state)
-        self._rate_states[user.id] = state
-        self._mixer.feed(user.id, converted)
+        self._mixer.feed(user.id, audioop.tomono(pcm, 2, 0.5, 0.5))
 
     def cleanup(self):
-        self._rate_states.clear()
+        self._seen_users.clear()
 
 
 class VoiceSession:
@@ -274,6 +285,8 @@ class VoiceSession:
         self._closed = False
         self._loop: asyncio.AbstractEventLoop | None = None
         self._resume_handle: str | None = None
+        self._heard_text: list[str] = []
+        self._said_text: list[str] = []
         self._health_task: asyncio.Task | None = None
         self._mix_task: asyncio.Task | None = None
         self.mixer = AudioMixer()
@@ -397,6 +410,9 @@ class VoiceSession:
         return types.LiveConnectConfig(
             response_modalities=["AUDIO"],
             system_instruction=SYSTEM_INSTRUCTION,
+            # 何を聞き取り何を話したかをログに出し、会話がズレたときに聞き間違いか判別できるようにする
+            input_audio_transcription=types.AudioTranscriptionConfig(),
+            output_audio_transcription=types.AudioTranscriptionConfig(),
             speech_config=types.SpeechConfig(
                 voice_config=types.VoiceConfig(
                     prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=VOICE_NAME)
@@ -516,13 +532,21 @@ class VoiceSession:
         )
         if not sc:
             return
+        if sc.input_transcription and sc.input_transcription.text:
+            self._heard_text.append(sc.input_transcription.text)
+        if sc.output_transcription and sc.output_transcription.text:
+            self._log_heard()
+            self._said_text.append(sc.output_transcription.text)
         if sc.turn_complete:
             STATS["turns_completed"] += 1
             self._model_speaking = False
+            self._log_heard()
+            self._log_said("")
         if sc.interrupted:
             STATS["interrupted"] += 1
             self._model_speaking = False
             self.output.clear()
+            self._log_said(" (interrupted)")
         if sc.model_turn:
             for part in sc.model_turn.parts:
                 if part.inline_data and part.inline_data.data:
@@ -531,6 +555,16 @@ class VoiceSession:
                     self.output.push(part.inline_data.data)
                 else:
                     log.debug("voice recv: part with no inline_data: %s", part)
+
+    def _log_heard(self):
+        if self._heard_text:
+            log.info("voice transcript: heard %r", "".join(self._heard_text))
+            self._heard_text.clear()
+
+    def _log_said(self, suffix: str):
+        if self._said_text:
+            log.info("voice transcript: said %r%s", "".join(self._said_text), suffix)
+            self._said_text.clear()
 
     async def _idle_watch(self):
         while True:
