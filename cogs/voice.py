@@ -91,6 +91,8 @@ SAY_MAX_CHARS = 300  # !say 1回の上限。1分程度の音声でDiscordの添�
 IDLE_TIMEOUT_SECONDS = 300
 IDLE_CHECK_INTERVAL = 30
 RECONNECT_GRACE_SECONDS = 15
+REJOIN_WINDOW_SECONDS = 600
+MAX_REJOINS_PER_WINDOW = 3
 # 入力がこの秒数途切れたら話し終わりとみなす。0.5秒だと「昨日さ、」のような言い淀みの
 # 途中でBotが返事を始め、話の前半だけに答えてしまうことを実APIで確認したため長めにする。
 INPUT_PAUSE_SECONDS = 1.0
@@ -300,6 +302,9 @@ class VoiceSession:
         self.cog = cog
         self.guild = guild
         self.voice_client = voice_client
+        self.channel_id = voice_client.channel.id if voice_client else None
+        self._rejoining = False
+        self._rejoin_times: list[float] = []
         self.text_channel = text_channel
         self.output = GeminiOutputSource()
         self.last_activity = time.monotonic()
@@ -388,21 +393,57 @@ class VoiceSession:
     # 受信(voice_recvのリーダー)も再生(discord.pyのAudioPlayer)も、内部で例外が起きると
     # スレッドごと終了し、以後は二度と動かない。どちらも止まれば通話は無反応になるため、
     # 停止を検知したら自動で立ち上げ直す。コールバックは各スレッドから呼ばれる。
+    # rejoin()でvoice_clientが差し替わるため、実行中かどうかは常に現在の接続で判定する。
     def _on_listen_stopped(self, error: Exception | None):
-        if self._closed:
+        if self._closed or self._rejoining:
             return
         log.warning("voice listen: stopped unexpectedly (%r), restarting", error)
         asyncio.run_coroutine_threadsafe(
-            self._restart("listen", self.voice_client.is_listening, self._start_listening), self._loop
+            self._restart("listen", lambda: self.voice_client.is_listening(), self._start_listening), self._loop
         )
 
     def _on_play_stopped(self, error: Exception | None):
-        if self._closed:
+        if self._closed or self._rejoining:
             return
         log.warning("voice play: stopped unexpectedly (%r), restarting", error)
         asyncio.run_coroutine_threadsafe(
-            self._restart("play", self.voice_client.is_playing, self._start_playing), self._loop
+            self._restart("play", lambda: self.voice_client.is_playing(), self._start_playing), self._loop
         )
+
+    async def rejoin(self) -> bool:
+        """Discordのボイス接続だけを張り直す。Geminiとの会話はそのまま続ける。
+
+        ボイスWSが4006で切れた後、discord.pyの自動再接続がハンドシェイク後に止まったまま
+        戻らないことがある(本番ログで確認)。その場合はこちらで切断して入り直す。
+        """
+        now = time.monotonic()
+        self._rejoin_times = [t for t in self._rejoin_times if now - t < REJOIN_WINDOW_SECONDS]
+        if len(self._rejoin_times) >= MAX_REJOINS_PER_WINDOW:
+            log.warning("voice: rejoined %d times within %ds, giving up", len(self._rejoin_times), REJOIN_WINDOW_SECONDS)
+            return False
+        self._rejoin_times.append(now)
+        channel = self.guild.get_channel(self.channel_id)
+        if channel is None:
+            return False
+        self._rejoining = True
+        try:
+            old = self.voice_client
+            try:
+                old.stop()
+                await old.disconnect(force=True)
+            except Exception:
+                log.debug("voice: error while dropping stale voice connection", exc_info=True)
+            try:
+                self.voice_client = await channel.connect(cls=voice_recv.VoiceRecvClient)
+            except Exception:
+                log.exception("voice: failed to rejoin %s", channel)
+                return False
+            self._start_listening()
+            self._start_playing()
+            log.info("voice: rejoined %s", channel)
+            return True
+        finally:
+            self._rejoining = False
 
     async def _restart(self, name: str, is_running, start):
         # Discordとの再接続中はlisten()/play()が「未接続」で失敗するため、接続が戻るまで待つ。
@@ -799,8 +840,13 @@ class Voice(commands.Cog):
                 # 猶予を置いてから本当に切断されたままかを確認する。
                 log.info("voice: bot left channel, waiting %ds for auto-reconnect", RECONNECT_GRACE_SECONDS)
                 await asyncio.sleep(RECONNECT_GRACE_SECONDS)
-                if self.sessions.get(member.guild.id) is session and not session.voice_client.is_connected():
-                    await self.leave(member.guild.id)
+                if session._closed or session._rejoining or session.voice_client.is_connected():
+                    return
+                if self.sessions.get(member.guild.id) is not session:
+                    return
+                log.info("voice: auto-reconnect did not recover, rejoining the channel ourselves")
+                if not await session.rejoin():
+                    await self.leave(member.guild.id, "🔌 通話の接続が切れて戻れなかったよ。もう一回 `!voice join` してね")
             return
 
         session = self.sessions.get(member.guild.id)
