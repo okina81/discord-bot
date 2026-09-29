@@ -10,7 +10,7 @@ import discord
 from discord.ext import commands, voice_recv
 from discord.ext.voice_recv import opus as voice_recv_opus
 from google.genai import types
-from config import GEMINI_API_KEY, gemini_client
+from config import GEMINI_API_KEY, GEMINI_VOICE_ID, gemini_client
 
 log = logging.getLogger(__name__)
 
@@ -144,6 +144,13 @@ GREETING_PROMPT = (
     "今ボイスチャンネルに参加したところです。関西弁で、自分の名前を名乗りながら"
     "みんなに一言だけ短く挨拶してください。"
 )
+
+
+def _voice_config() -> types.VoiceConfig:
+    # tools/create_voice.py で登録したクローン音声のIDが設定されていればその声で話す
+    if GEMINI_VOICE_ID:
+        return types.VoiceConfig(voice=GEMINI_VOICE_ID)
+    return types.VoiceConfig(prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=VOICE_NAME))
 
 
 class GeminiOutputSource(discord.AudioSource):
@@ -413,11 +420,7 @@ class VoiceSession:
             # 何を聞き取り何を話したかをログに出し、会話がズレたときに聞き間違いか判別できるようにする
             input_audio_transcription=types.AudioTranscriptionConfig(),
             output_audio_transcription=types.AudioTranscriptionConfig(),
-            speech_config=types.SpeechConfig(
-                voice_config=types.VoiceConfig(
-                    prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=VOICE_NAME)
-                )
-            ),
+            speech_config=types.SpeechConfig(voice_config=_voice_config()),
             # 圧縮なしの音声セッションは最大15分で打ち切られるため、古い履歴を圧縮して延命する。
             context_window_compression=types.ContextWindowCompressionConfig(
                 sliding_window=types.SlidingWindow(),
@@ -433,8 +436,8 @@ class VoiceSession:
                 resuming = self._resume_handle is not None
                 self._model_speaking = False  # 切断で途切れたターンのturn_completeは来ない
                 async with gemini_client.aio.live.connect(model=LIVE_MODEL, config=self._live_config()) as session:
-                    log.info("voice session: connected to %s for guild %s (resumed=%s)",
-                             LIVE_MODEL, self.guild.id, resuming)
+                    log.info("voice session: connected to %s for guild %s (resumed=%s voice=%s)",
+                             LIVE_MODEL, self.guild.id, resuming, GEMINI_VOICE_ID or VOICE_NAME)
                     if not resuming:
                         await session.send_client_content(
                             turns=types.Content(role="user", parts=[types.Part(text=GREETING_PROMPT)]),
