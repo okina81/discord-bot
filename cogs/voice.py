@@ -1,10 +1,12 @@
 import asyncio
 import audioop
 import collections
+import io
 import logging
 import re
 import threading
 import time
+import wave
 
 import davey
 import discord
@@ -85,6 +87,7 @@ VOICE_NAME = "Puck"  # 明るい・アップビートな男性声
 # クローン音声に対応したTTSモデルで読み上げ直す。
 TTS_MODEL = "gemini-3.8-flash-tts"
 TTS_SENTENCE_END = re.compile(r".+?(?:[。！？!?…]+|\n+)")
+SAY_MAX_CHARS = 300  # !say 1回の上限。1分程度の音声でDiscordの添付上限にも十分収まる
 IDLE_TIMEOUT_SECONDS = 300
 IDLE_CHECK_INTERVAL = 30
 RECONNECT_GRACE_SECONDS = 15
@@ -150,6 +153,20 @@ GREETING_PROMPT = (
     "今ボイスチャンネルに参加したところです。関西弁で、自分の名前を名乗りながら"
     "みんなに一言だけ短く挨拶してください。"
 )
+
+
+async def tts_stream(text: str):
+    """クローン音声(GEMINI_VOICE_ID)でtextを読み上げた24kHz mono 16bit PCMを、生成された順に返す。"""
+    config = types.GenerateContentConfig(
+        response_modalities=["AUDIO"],
+        speech_config=types.SpeechConfig(voice_config=types.VoiceConfig(voice=GEMINI_VOICE_ID)),
+    )
+    stream = await gemini_client.aio.models.generate_content_stream(model=TTS_MODEL, contents=text, config=config)
+    async for chunk in stream:
+        content = chunk.candidates[0].content if chunk.candidates else None
+        for part in content.parts if content and content.parts else []:
+            if part.inline_data and part.inline_data.data:
+                yield part.inline_data.data
 
 
 class GeminiOutputSource(discord.AudioSource):
@@ -602,26 +619,21 @@ class VoiceSession:
         while not self._tts_queue.empty():
             self._tts_queue.get_nowait()
 
+    def say(self, text: str):
+        """!say コマンド用。通話中の会話に割り込まず、順番が来たらクローン音声で読み上げる。"""
+        self._tts_enqueue(text)
+
     async def _tts_loop(self):
-        config = types.GenerateContentConfig(
-            response_modalities=["AUDIO"],
-            speech_config=types.SpeechConfig(voice_config=types.VoiceConfig(voice=GEMINI_VOICE_ID)),
-        )
         while True:
             sentence = await self._tts_queue.get()
             epoch = self._tts_epoch
             self._tts_inflight = True
             started = time.monotonic()
             try:
-                stream = await gemini_client.aio.models.generate_content_stream(
-                    model=TTS_MODEL, contents=sentence, config=config)
-                async for chunk in stream:
+                async for pcm in tts_stream(sentence):
                     if epoch != self._tts_epoch:
                         break
-                    content = chunk.candidates[0].content if chunk.candidates else None
-                    for part in content.parts if content and content.parts else []:
-                        if part.inline_data and part.inline_data.data:
-                            self.output.push(part.inline_data.data)
+                    self.output.push(pcm)
                 STATS["tts_sentences"] += 1
                 log.debug("voice tts: %.2fs for %r", time.monotonic() - started, sentence)
             except asyncio.CancelledError:
@@ -734,6 +746,46 @@ class Voice(commands.Cog):
             await ctx.send(f"❌ 開始に失敗したよ: {type(e).__name__}: {e}")
             return
         await ctx.send(f"🎙️ **{channel.name}** に参加したよ！話しかけてね")
+
+    @commands.command(name="say")
+    @commands.is_owner()
+    async def say_cmd(self, ctx, *, text: str = ""):
+        # 実在の人の声なので、なりすましや悪用を防ぐためオーナー限定にしている
+        text = text.strip()
+        if not GEMINI_API_KEY or not GEMINI_VOICE_ID:
+            await ctx.send("❌ クローン音声が設定されていないよ！(GEMINI_VOICE_ID)")
+            return
+        if not text:
+            await ctx.send("❌ 使い方: `!say 読み上げたい文章`")
+            return
+        if len(text) > SAY_MAX_CHARS:
+            await ctx.send(f"❌ 長すぎるよ！{SAY_MAX_CHARS}文字以内にしてね（今{len(text)}文字）")
+            return
+
+        session = self.sessions.get(ctx.guild.id) if ctx.guild else None
+        if session:
+            session.say(text)
+            await ctx.message.add_reaction("🔊")
+            return
+
+        try:
+            async with ctx.typing():
+                pcm = b"".join([chunk async for chunk in tts_stream(text)])
+        except Exception as e:
+            log.warning("say: failed to synthesize %r: %r", text, e)
+            await ctx.send(f"❌ 読み上げに失敗したよ: {e}")
+            return
+        if not pcm:
+            await ctx.send("❌ 音声が返ってこなかったよ。文章を変えて試してね")
+            return
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(GEMINI_OUT_RATE)
+            w.writeframes(pcm)
+        buf.seek(0)
+        await ctx.send(file=discord.File(buf, filename="say.wav"))
 
     @commands.Cog.listener()
     async def on_voice_state_update(self, member, before, after):
