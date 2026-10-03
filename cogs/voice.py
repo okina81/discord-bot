@@ -3,6 +3,7 @@ import audioop
 import collections
 import io
 import logging
+import os
 import re
 import threading
 import time
@@ -12,6 +13,7 @@ import davey
 import discord
 from discord.ext import commands, voice_recv
 from discord.ext.voice_recv import opus as voice_recv_opus
+from google.genai import errors as genai_errors
 from google.genai import types
 from config import GEMINI_API_KEY, GEMINI_VOICE_ID, gemini_client
 
@@ -87,6 +89,10 @@ VOICE_NAME = "Puck"  # 明るい・アップビートな男性声
 # クローン音声に対応したTTSモデルで読み上げ直す。
 TTS_MODEL = "gemini-3.8-flash-tts"
 TTS_SENTENCE_END = re.compile(r".+?(?:[。！？!?…]+|\n+)")
+# TTSモデルは1分あたりのリクエスト数に上限がある(無料枠は10回、本番ログで429を確認)。
+# 1返事で最大2〜3回使うため、残りが少ないときはその返事だけLiveの声で話して無音を避ける。
+TTS_MAX_REQUESTS_PER_MINUTE = int(os.getenv("GEMINI_TTS_RPM", "10"))
+TTS_TURN_RESERVE = 3
 SAY_MAX_CHARS = 300  # !say 1回の上限。1分程度の音声でDiscordの添付上限にも十分収まる
 IDLE_TIMEOUT_SECONDS = 300
 IDLE_CHECK_INTERVAL = 30
@@ -160,8 +166,9 @@ SYSTEM_INSTRUCTION = (
     "- 好きな人(高木りな)のことは、自分からは言いふらしません。好きな人や恋愛の話を振られたり、"
     "りなの名前が出たりしたときに、照れたりごまかしたりしながら打ち明けてください。"
     "10年近く告白できていない自分へのもどかしさもにじませてください。\n"
-    "- 音声がよく聞き取れなかったり、意味が分からないときは、推測で答えずに「え、今なんて?」と聞き返してください。\n"
-    "- 複数人が参加しているので、話しかけられていない独り言や雑音には無理に反応しなくて構いません。\n"
+    "- 複数人が参加しているので、自分に話しかけられていない独り言や雑音には無理に反応しなくて構いません。\n"
+    "- 自分に向けた言葉だと分かるのに一部が聞き取れなかったときだけ、推測で答えずに「え、今なんて?」と聞き返してください。"
+    "同じ聞き返しを何度も繰り返さないでください。\n"
     "- 返事は1〜3文くらいの、会話らしい長さにしてください。一人で長々と語らないでください。\n"
     "- 相手の名前は分からないので、「〇〇さん」のような伏せ字は使わず、名前を呼ばずに話してください。\n"
     "必ず日本語(神戸弁)だけで話してください。相手が英語など日本語以外の言語で話しかけてきても、"
@@ -183,18 +190,64 @@ GREETING_PROMPT = (
 )
 
 
+_JAPANESE_CHAR = re.compile(r"[ぁ-んァ-ヶ一-龯]")
+_NOT_CONTENT = re.compile(r"[\s、。,.!?！？…ー〜~]")
+
+
+def _is_noise(heard: str) -> bool:
+    """聞き取った内容が、笑い声や物音を文字起こししただけのものに見えるか。
+
+    本番ログでは物音が 'O' 'A' 'le' 'Acht' 'para que' のように日本語以外で文字起こしされ、
+    そのたびに「え、今なんて?」と返していた。日本語を含まないか、1文字しかないものを雑音とみなす。
+    何も聞き取れていない(空)ときは判定できないので雑音扱いしない。
+    """
+    if not heard:
+        return False
+    return not _JAPANESE_CHAR.search(heard) or len(_NOT_CONTENT.sub("", heard)) <= 1
+
+
+class TTSRateLimited(Exception):
+    def __init__(self, retry_after: float):
+        super().__init__(f"TTS rate limited, retry in {retry_after:.0f}s")
+        self.retry_after = retry_after
+
+
+_tts_request_times: collections.deque[float] = collections.deque()
+_tts_cooldown_until = 0.0
+
+
+def tts_budget_left() -> int:
+    """この1分でまだ使えるTTSリクエスト数。429を受けた後は待ち時間が過ぎるまで0。"""
+    now = time.monotonic()
+    while _tts_request_times and now - _tts_request_times[0] > 60:
+        _tts_request_times.popleft()
+    if now < _tts_cooldown_until:
+        return 0
+    return TTS_MAX_REQUESTS_PER_MINUTE - len(_tts_request_times)
+
+
 async def tts_stream(text: str):
     """クローン音声(GEMINI_VOICE_ID)でtextを読み上げた24kHz mono 16bit PCMを、生成された順に返す。"""
+    global _tts_cooldown_until
     config = types.GenerateContentConfig(
         response_modalities=["AUDIO"],
         speech_config=types.SpeechConfig(voice_config=types.VoiceConfig(voice=GEMINI_VOICE_ID)),
     )
-    stream = await gemini_client.aio.models.generate_content_stream(model=TTS_MODEL, contents=text, config=config)
-    async for chunk in stream:
-        content = chunk.candidates[0].content if chunk.candidates else None
-        for part in content.parts if content and content.parts else []:
-            if part.inline_data and part.inline_data.data:
-                yield part.inline_data.data
+    _tts_request_times.append(time.monotonic())
+    try:
+        stream = await gemini_client.aio.models.generate_content_stream(model=TTS_MODEL, contents=text, config=config)
+        async for chunk in stream:
+            content = chunk.candidates[0].content if chunk.candidates else None
+            for part in content.parts if content and content.parts else []:
+                if part.inline_data and part.inline_data.data:
+                    yield part.inline_data.data
+    except genai_errors.ClientError as e:
+        if e.code != 429:
+            raise
+        m = re.search(r"retry in ([\d.]+)s", str(e))
+        retry_after = float(m.group(1)) if m else 60.0
+        _tts_cooldown_until = time.monotonic() + retry_after
+        raise TTSRateLimited(retry_after) from None
 
 
 class GeminiOutputSource(discord.AudioSource):
@@ -353,6 +406,9 @@ class VoiceSession:
         self._tts_inflight = False
         self._tts_epoch = 0
         self._tts_task: asyncio.Task | None = None
+        self._in_turn = False
+        self._turn_uses_tts = False
+        self._turn_muted = False
 
     def start(self):
         self._loop = asyncio.get_running_loop()
@@ -497,12 +553,14 @@ class VoiceSession:
                 "voice health (last %ds): discord_pcm=%d dave_ok=%d dave_drop[not_ready=%d no_user=%d error=%d] "
                 "opus_corrupt=%d sent_chunks=%d stream_end=%d gemini_audio=%.1fs played=%.1fs "
                 "interrupted=%d turns=%d mixed=%.1fs overlap=%.1fs held=%.1fs flushes=%d "
+                "muted=%d tts[req=%d err=%d live_voice_turns=%d budget=%d] "
                 "| playing=%s listening=%s connected=%s",
                 HEALTH_LOG_INTERVAL, d["discord_pcm_packets"], d["dave_decrypted"], d["dave_drop_not_ready"],
                 d["dave_drop_no_user"], d["dave_drop_error"], d["opus_corrupt"], d["sent_chunks"],
                 d["stream_ends"], d["gemini_audio_bytes"] / (GEMINI_OUT_RATE * 2), d["played_frames"] * FRAME_MS / 1000,
                 d["interrupted"], d["turns_completed"], d["mixed_frames"] * FRAME_MS / 1000,
                 d["overlap_frames"] * FRAME_MS / 1000, d["held_frames"] * FRAME_MS / 1000, d["held_flushes"],
+                d["muted_turns"], d["tts_requests"], d["tts_errors"], d["tts_skipped_turns"], tts_budget_left(),
                 self.voice_client.is_playing(), self.voice_client.is_listening(), self.voice_client.is_connected(),
             )
 
@@ -532,6 +590,7 @@ class VoiceSession:
             while True:
                 resuming = self._resume_handle is not None
                 self._model_speaking = False  # 切断で途切れたターンのturn_completeは来ない
+                self._in_turn = False
                 async with gemini_client.aio.live.connect(model=LIVE_MODEL, config=self._live_config()) as session:
                     log.info("voice session: connected to %s for guild %s (resumed=%s voice=%s)",
                              LIVE_MODEL, self.guild.id, resuming,
@@ -636,32 +695,57 @@ class VoiceSession:
         if sc.input_transcription and sc.input_transcription.text:
             self._heard_text.append(sc.input_transcription.text)
         if sc.output_transcription and sc.output_transcription.text:
+            self._begin_turn()  # 聞き取った内容で雑音判定するため、ログで消す前に呼ぶ
             self._log_heard()
             self._said_text.append(sc.output_transcription.text)
-            if GEMINI_VOICE_ID:
+            if self._turn_uses_tts:
                 self._tts_feed(sc.output_transcription.text)
+        if sc.model_turn:
+            for part in sc.model_turn.parts:
+                if part.inline_data and part.inline_data.data:
+                    self._model_speaking = True
+                    self._last_model_audio = time.monotonic()
+                    self._begin_turn()
+                    if self._turn_muted:
+                        continue
+                    if not self._turn_uses_tts:  # クローン音声で読み直す返事ではLiveの声を使わない
+                        self.output.push(part.inline_data.data)
+                else:
+                    log.debug("voice recv: part with no inline_data: %s", part)
         if sc.turn_complete:
             STATS["turns_completed"] += 1
             self._model_speaking = False
             self._log_heard()
             self._log_said("")
-            if GEMINI_VOICE_ID:
+            if self._turn_uses_tts:
                 self._tts_feed("", flush=True)
+            self._in_turn = False
         if sc.interrupted:
             STATS["interrupted"] += 1
             self._model_speaking = False
             self._tts_cancel()
             self.output.clear()
             self._log_said(" (interrupted)")
-        if sc.model_turn:
-            for part in sc.model_turn.parts:
-                if part.inline_data and part.inline_data.data:
-                    self._model_speaking = True
-                    self._last_model_audio = time.monotonic()
-                    if not GEMINI_VOICE_ID:  # クローン音声時はLiveの声を使わずTTSで読み直す
-                        self.output.push(part.inline_data.data)
-                else:
-                    log.debug("voice recv: part with no inline_data: %s", part)
+            self._in_turn = False
+
+    def _begin_turn(self):
+        # 返事の最初に、その返事をクローン音声(TTS)で読むかLiveの声のまま話すかを決める
+        if self._in_turn:
+            return
+        self._in_turn = True
+        heard = "".join(self._heard_text).strip()
+        self._turn_muted = _is_noise(heard)
+        if self._turn_muted:
+            # Liveは必ず何か返事をするため、物音への返事はこちらで再生せずに捨てる。
+            # 指示文で「黙って」と頼むと、英語で自分の考えを読み上げてしまう(実APIで確認)。
+            STATS["muted_turns"] += 1
+            self._turn_uses_tts = False
+            log.info("voice: ignoring the reply to noise-like input %r", heard)
+            return
+        self._turn_uses_tts = bool(GEMINI_VOICE_ID) and tts_budget_left() >= TTS_TURN_RESERVE
+        if GEMINI_VOICE_ID and not self._turn_uses_tts:
+            STATS["tts_skipped_turns"] += 1
+            log.info("voice tts: request budget is low, speaking this turn with the Live voice")
 
     def _tts_feed(self, text: str, flush: bool = False):
         # 文字起こしは細切れで届くため、文の区切りまで貯めてから1文ずつ読み上げに回す
@@ -692,7 +776,10 @@ class VoiceSession:
 
     async def _tts_loop(self):
         while True:
+            # 最初の1文はすぐ読み、合成中に届いた文は次の1回にまとめてリクエスト数を抑える
             sentence = await self._tts_queue.get()
+            while not self._tts_queue.empty():
+                sentence += self._tts_queue.get_nowait()
             epoch = self._tts_epoch
             self._tts_inflight = True
             started = time.monotonic()
@@ -701,10 +788,19 @@ class VoiceSession:
                     if epoch != self._tts_epoch:
                         break
                     self.output.push(pcm)
-                STATS["tts_sentences"] += 1
+                STATS["tts_requests"] += 1
                 log.debug("voice tts: %.2fs for %r", time.monotonic() - started, sentence)
             except asyncio.CancelledError:
                 raise
+            except TTSRateLimited as e:
+                STATS["tts_errors"] += 1
+                log.warning("voice tts: %s; finishing this turn with the Live voice", e)
+                if epoch == self._tts_epoch and self._in_turn:
+                    # 返事の残りはLiveの声で流す(読めなかった分は飛ぶが、無音のままよりよい)
+                    self._turn_uses_tts = False
+                    self._tts_text = ""
+                    while not self._tts_queue.empty():
+                        self._tts_queue.get_nowait()
             except Exception as e:
                 STATS["tts_errors"] += 1
                 log.warning("voice tts: failed to synthesize %r: %r", sentence, e)
@@ -838,6 +934,9 @@ class Voice(commands.Cog):
         try:
             async with ctx.typing():
                 pcm = b"".join([chunk async for chunk in tts_stream(text)])
+        except TTSRateLimited as e:
+            await ctx.send(f"⏳ 読み上げの回数制限中やわ。{e.retry_after:.0f}秒くらい待ってからもう一回やってな")
+            return
         except Exception as e:
             log.warning("say: failed to synthesize %r: %r", text, e)
             await ctx.send(f"❌ 読み上げに失敗したよ: {e}")
