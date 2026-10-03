@@ -98,6 +98,7 @@ SAY_MAX_CHARS = 300  # !say 1回の上限。1分程度の音声でDiscordの添�
 IDLE_TIMEOUT_SECONDS = 300
 IDLE_CHECK_INTERVAL = 30
 RECONNECT_GRACE_SECONDS = 15
+MANUAL_DISCONNECT_WINDOW_SECONDS = 1.5
 REJOIN_WINDOW_SECONDS = 600
 MAX_REJOINS_PER_WINDOW = 3
 # 入力がこの秒数途切れたら話し終わりとみなす。0.5秒だと「昨日さ、」のような言い淀みの
@@ -396,6 +397,7 @@ class VoiceSession:
         self.text_channel = text_channel
         self.output = GeminiOutputSource()
         self.last_activity = time.monotonic()
+        self.last_connected_at = time.monotonic()  # 手動切断と通信トラブルの見分けに使う
         self._send_queue: asyncio.Queue = asyncio.Queue()
         self._task: asyncio.Task | None = None
         self._closed = False
@@ -455,6 +457,8 @@ class VoiceSession:
                 await asyncio.sleep(delay)
             elif delay < -0.2:
                 next_t = time.monotonic()
+            if self.voice_client.is_connected():
+                self.last_connected_at = time.monotonic()
             popped = self.mixer.pop_frame()
             speaking = self._bot_speaking()
             if popped is not None:
@@ -1029,6 +1033,17 @@ class Voice(commands.Cog):
                 # discord.pyはボイスWSが4006等で切れると、一度channel=Noneで抜けてから
                 # 自動で入り直す。ここで即leave()すると再接続を潰してしまうため、
                 # 猶予を置いてから本当に切断されたままかを確認する。
+                if session._rejoining:
+                    return
+                # Discordの画面から手動で切断されたときは、直前まで接続が正常なまま急に外される。
+                # 通信トラブル(4006など)では先に接続が切れて再接続を試み、しばらくしてから外される。
+                # 外された時点で直前まで正常につながっていたなら手動切断とみなし、入り直さない。
+                healthy_for = time.monotonic() - session.last_connected_at
+                if healthy_for < MANUAL_DISCONNECT_WINDOW_SECONDS:
+                    log.info("voice: disconnected while the connection was healthy (%.2fs ago), "
+                             "treating it as a manual disconnect", healthy_for)
+                    await self.leave(member.guild.id, "👋 切断されたから抜けるね。また呼んでな")
+                    return
                 log.info("voice: bot left channel, waiting %ds for auto-reconnect", RECONNECT_GRACE_SECONDS)
                 await asyncio.sleep(RECONNECT_GRACE_SECONDS)
                 if session._closed or session._rejoining or session.voice_client.is_connected():
