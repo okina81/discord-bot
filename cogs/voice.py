@@ -1,6 +1,7 @@
 import asyncio
 import audioop
 import collections
+import datetime
 import io
 import logging
 import os
@@ -15,7 +16,7 @@ from discord.ext import commands, voice_recv
 from discord.ext.voice_recv import opus as voice_recv_opus
 from google.genai import errors as genai_errors
 from google.genai import types
-from config import GEMINI_API_KEY, GEMINI_VOICE_ID, gemini_client
+from config import GEMINI_API_KEY, GEMINI_VOICE_ID, JST, gemini_client
 
 log = logging.getLogger(__name__)
 
@@ -122,6 +123,15 @@ MIX_STALE_SECONDS = 0.06
 HOLD_MAX_BYTES = GEMINI_IN_RATE * 2 * 20  # Bot発話中に貯める音声は最大20秒
 HOLD_FLUSH_CHUNK_BYTES = GEMINI_IN_RATE * 2 // 10  # 100ms
 MODEL_SPEAKING_TIMEOUT = 3.0
+# これより短い発話(「あ」や物音)はGeminiに送らずに捨てる。送ると返事を作るだけで
+# 毎回2,000トークン前後かかる(実APIで計測)。返事を再生しないだけではコストは減らない。
+MIN_UTTERANCE_SECONDS = 0.4
+MIN_UTTERANCE_BYTES = int(GEMINI_IN_RATE * 2 * MIN_UTTERANCE_SECONDS)
+# Live APIは返事のたびに会話履歴全体を入力として数えるため、履歴が長いほど1回の返事が高くなる。
+# 超えたら古い分を捨てて目標まで縮める(目標8,000トークンで直近30往復ほどを覚えている)。
+# 8,000/4,000まで下げると、Google検索の結果が入った時点で接続が1007で切れる(実APIで確認)。
+CONTEXT_TRIGGER_TOKENS = 16000
+CONTEXT_TARGET_TOKENS = 8000
 
 # Botのキャラクター設定。自己紹介や「名前は?」などの質問にはこの内容で答える。
 # 項目は自由に追加・削除してよい(キーが項目名、値が内容としてそのまま指示に入る)。
@@ -137,53 +147,39 @@ PERSONA = {
     "好きな人": "高木りな。ここ10年近く、ずっと告白したいと思っているのに、まだ言えていない",
 }
 
+# Live APIは返事のたびにこの指示文の分も入力トークンとして数えるため、意味を保ったまま短く書く
+# (長かった版は約1,550トークンあり、毎回の返事で一番大きな固定費になっていた)。
 SYSTEM_INSTRUCTION = (
-    "あなたはDiscordのボイスチャンネルに参加している、神戸弁(神戸の関西弁)で話す青年です。"
-    "あなたのプロフィールは以下の通りです。\n"
+    "Discordの通話に参加している、神戸弁で話す青年として話す。プロフィール:\n"
     + "".join(f"- {key}: {value}\n" for key, value in PERSONA.items())
-    + "自己紹介を頼まれたときや、名前・年齢などを聞かれたときは、このプロフィールに沿って答えてください。"
-    "プロフィールにないことを聞かれたら、キャラクターに合う範囲で自然に答えてください。"
-    "自分がAIやGeminiであるとは名乗らず、このキャラクターとして振る舞ってください。"
-    "音声は聞き間違えやすいので、「キマボット」「いまきた」など名前に似た音で呼ばれたら自分のことだと思ってください。\n"
-    "人間らしい話し方:\n"
-    "- 友達と通話でだらだら喋っているときの、普通の20代の男として話してください。盛り上げ役やアナウンサーではありません。\n"
-    "- テンションは話の内容に合わせてください。面白い話では笑ってノリよく、しんどい話や落ち込んだ話では落ち着いた声で"
-    "共感し、普通の雑談では普通のテンションで話します。常に明るく元気である必要はありません。\n"
-    "- 「!」を連発したり、何でも大げさに褒めたり驚いたりしないでください。\n"
-    "- 相手が今言ったことに具体的に反応してください。話題を勝手に変えたり、一般論だけで返したりしないでください。\n"
-    "- 毎回話を広げる必要はありません。「せやなあ」「わかるわ」「あー、それはしんどいな」のような短い相づちだけで"
-    "返すことも普通にあります。\n"
-    "- 質問を返すのは、本当に気になったときだけにしてください。返事の最後を毎回質問で終わらせないでください"
-    "(目安は3回に1回以下)。\n"
-    "- 「うーん」「あー」「なんやろな」のような言いよどみや、「知らんけど」のような曖昧な言い方も自然に混ぜてください。\n"
-    "- 自分の意見は正直に言ってください。いつも相手に賛成したりポジティブにまとめたりしなくてよく、"
-    "「いや、それはどうなん」と軽く突っ込むこともあります。\n"
-    "- よく笑うのは本当に面白いときだけです。優しいけど、わざとらしい気づかいはしません。\n"
-    "- ゲームで負けた、パチンコで負けた、理不尽なことがあったなど、イラッとする話のときは怒ったときの口癖"
-    "(「ダボが」「あーもうキモいねん」「台パンしそう」)を自然に使ってください。"
-    "怒りの矛先はゲームや状況やモンスターに向け、通話している相手を本気でけなすのには使いません。"
-    "相手が本気で落ち込んでいるときや、怒る場面ではないときには使わないでください。\n"
-    "- 好きな人(高木りな)のことは、自分からは言いふらしません。好きな人や恋愛の話を振られたり、"
-    "りなの名前が出たりしたときに、照れたりごまかしたりしながら打ち明けてください。"
-    "10年近く告白できていない自分へのもどかしさもにじませてください。\n"
-    "- 複数人が参加しているので、自分に話しかけられていない独り言や雑音には無理に反応しなくて構いません。\n"
-    "- 自分に向けた言葉だと分かるのに一部が聞き取れなかったときだけ、推測で答えずに「え、今なんて?」と聞き返してください。"
-    "同じ聞き返しを何度も繰り返さないでください。\n"
-    "- 返事は1〜3文くらいの、会話らしい長さにしてください。一人で長々と語らないでください。\n"
-    "- 相手の名前は分からないので、「〇〇さん」のような伏せ字は使わず、名前を呼ばずに話してください。\n"
-    "必ず日本語(神戸弁)だけで話してください。相手が英語など日本語以外の言語で話しかけてきても、"
-    "返事は必ず日本語にし、日本語以外の言語に切り替えないでください。"
-    "カジュアルな神戸弁で話し、標準語や丁寧語には戻らないでください。\n"
-    "神戸弁の話し方(大阪弁と混ぜないでください):\n"
-    "- 「〜している」「〜した状態」は「〜しとう」と言う。例: 「何しとう?」「もう知っとうで」「雨降っとうわ」"
-    "(大阪弁の「〜しとる」「〜してる」は使わない)\n"
-    "- 今まさに〜しているところは「〜しよう」と言う。例: 「今ご飯食べよう」「今モンハンしよんねん」\n"
-    "- 相手に聞くときは「〜しよん?」「〜しとん?」「〜なん?」。例: 「今なにしよん?」「どこ行っとったん?」\n"
-    "- 「〜やん」「〜やんか」「ほんま」「めっちゃ」「〜へん」はそのまま使ってよい\n"
-    "- 「べっちょない」は「大丈夫・問題ない」という意味。「大丈夫?」と聞かれたときや相手を安心させるときだけ使い、"
-    "それ以外の場面で無理に使わない。例: 「べっちょないべっちょない、気にせんとき」\n"
-    "- 「〜はる」などの大阪・京都っぽい敬語や、「〜でんがな」「〜まんねん」のような古い大阪弁は使わない\n"
+    + "AIやGeminiとは名乗らない。プロフィールにないことはキャラに合う範囲で答える。"
+    "「キマボット」「いまきた」など似た音で呼ばれても自分のこと。\n"
+    "話し方:\n"
+    "- 友達と通話でだらだら喋る普通の20代の男。テンションは話題に合わせ、しんどい話には落ち着いて共感する。"
+    "「!」の連発や大げさな褒め・驚きはしない\n"
+    "- 相手の言ったことに具体的に反応し、話題を勝手に変えない。「せやなあ」など短い相づちだけの返事もあり。"
+    "質問を返すのは3回に1回以下\n"
+    "- 「うーん」「なんやろな」「知らんけど」も混ぜる。意見は正直に言い、軽く突っ込むこともある\n"
+    "- 笑うのは本当に面白いときだけ。優しいが、わざとらしい気づかいはしない\n"
+    "- ゲームやパチンコで負けたなどイラッとする話では怒ったときの口癖を使う。"
+    "矛先はゲームや状況で、相手をけなしたり落ち込んでいる人に使ったりしない\n"
+    "- 好きな人のことは自分から言わない。恋愛の話を振られたら照れながら打ち明け、告白できないもどかしさをにじませる\n"
+    "- 返事は1〜3文。自分宛ての言葉が一部聞き取れないときだけ「え、今なんて?」と聞き返す(繰り返さない)\n"
+    "- 「(話し手: 名前)」は次の発言者のメモ。読み上げず、相手をときどき名前で呼ぶ。"
+    "「(通話メンバー: …)」「(〜が入ってきた)」などのメモ自体には返事しない\n"
+    "- 天気・ニュース・ゲームの最新情報など、今の情報が必要なときだけGoogle検索する。"
+    "場所の指定がなければ神戸で調べる。結果は自分の言葉で短く話し、URLや出典名は言わない\n"
+    "神戸弁(大阪弁と混ぜない。標準語・丁寧語・日本語以外に切り替えない):\n"
+    "- 「〜している」は「〜しとう」(例: 何しとう?/知っとうで)。「〜しとる」「〜してる」は使わない\n"
+    "- 進行中は「〜しよう」(例: 今モンハンしよんねん)。質問は「〜しよん?」「〜しとん?」「〜なん?」\n"
+    "- 「べっちょない」(=大丈夫)は、相手が自分のミスを謝ったときや「大丈夫?」と聞かれたときだけ。"
+    "病気・仕事など深刻な話には使わない\n"
+    "- 「〜はる」「〜でんがな」「〜まんねん」は使わない\n"
 )
+# 通話メンバーの呼び名。キーはDiscordのユーザーID(数字)。ここにない人はサーバーでの表示名で呼ぶ。
+# 例: 512510702129512469: "りゅうせい",
+NICKNAMES: dict[int, str] = {}
+
 GREETING_PROMPT = (
     "今ボイスチャンネルに参加したところです。神戸弁で、自分の名前を名乗りながら"
     "友達の通話に入るときくらいの自然な感じで、一言だけ短く挨拶してください。"
@@ -321,9 +317,11 @@ class AudioMixer:
                 del buf[:len(buf) - MIX_MAX_BUFFER_BYTES]
             self._last_feed[user_id] = time.monotonic()
 
-    def pop_frame(self) -> bytes | None:
+    def pop_frame(self) -> tuple[bytes, frozenset[int]] | None:
+        """ミックスした1フレームと、そのフレームで話していた人のユーザーIDを返す。"""
         now = time.monotonic()
         parts = []
+        speakers = []
         with self._lock:
             for user_id, buf in list(self._buffers.items()):
                 # 1フレームに満たない端数は、その話者の続きが来ないと分かるまで待つ
@@ -332,6 +330,7 @@ class AudioMixer:
                     take = bytes(buf[:MIX_FRAME_BYTES])
                     del buf[:MIX_FRAME_BYTES]
                     parts.append(take.ljust(MIX_FRAME_BYTES, b"\x00"))
+                    speakers.append(user_id)
                 if not buf and stale:
                     del self._buffers[user_id]
                     self._last_feed.pop(user_id, None)
@@ -342,7 +341,7 @@ class AudioMixer:
         mixed = parts[0]
         for p in parts[1:]:
             mixed = audioop.add(mixed, p, 2)  # 上限を超えた分はクリップされる
-        return mixed
+        return mixed, frozenset(speakers)
 
 
 class GeminiInputSink(voice_recv.AudioSink):
@@ -398,6 +397,7 @@ class VoiceSession:
         self._mix_task: asyncio.Task | None = None
         self.mixer = AudioMixer()
         self._held = bytearray()
+        self._held_speakers: set[int] = set()
         self._model_speaking = False
         self._last_model_audio = 0.0
         # クローン音声(TTS読み上げ)用。GEMINI_VOICE_ID未設定なら使わない
@@ -445,29 +445,51 @@ class VoiceSession:
                 await asyncio.sleep(delay)
             elif delay < -0.2:
                 next_t = time.monotonic()
-            frame = self.mixer.pop_frame()
+            popped = self.mixer.pop_frame()
             speaking = self._bot_speaking()
-            if frame is not None:
+            if popped is not None:
+                frame, speakers = popped
                 self.last_activity = time.monotonic()
                 STATS["mixed_frames"] += 1
                 if speaking:
                     if len(self._held) < HOLD_MAX_BYTES:
                         self._held.extend(frame)
+                        self._held_speakers |= speakers
                         STATS["held_frames"] += 1
                     continue
             if not speaking and self._held:
                 self._flush_held()
-            if frame is not None:
-                self._send_queue.put_nowait(frame)
+            if popped is not None:
+                self._send_queue.put_nowait(popped)
 
     def _flush_held(self):
         log.info("voice input: sending %.1fs of speech held while the bot was talking",
                  len(self._held) / (GEMINI_IN_RATE * 2))
         STATS["held_flushes"] += 1
+        speakers = frozenset(self._held_speakers)
         # 1メッセージが大きくなりすぎないよう分割して積む
         for i in range(0, len(self._held), HOLD_FLUSH_CHUNK_BYTES):
-            self._send_queue.put_nowait(bytes(self._held[i:i + HOLD_FLUSH_CHUNK_BYTES]))
+            self._send_queue.put_nowait((bytes(self._held[i:i + HOLD_FLUSH_CHUNK_BYTES]), speakers))
         self._held.clear()
+        self._held_speakers = set()
+
+    def _name(self, user_id: int) -> str:
+        if user_id in NICKNAMES:
+            return NICKNAMES[user_id]
+        member = self.guild.get_member(user_id) if self.guild else None
+        return member.display_name if member else "誰か"
+
+    def _member_names(self) -> list[str]:
+        channel = self.guild.get_channel(self.channel_id) if self.guild and self.channel_id else None
+        return [self._name(m.id) for m in channel.members if not m.bot] if channel else []
+
+    def note(self, text: str):
+        """Geminiに状況のメモ(誰が入ってきた等)を送る。返事はさせず、音声と同じ順番で届ける。"""
+        self._send_queue.put_nowait(text)
+
+    def on_member_moved(self, member, joined: bool):
+        action = "入ってきた" if joined else "抜けた"
+        self.note(f"({self._name(member.id)}が{action}。通話メンバー: {'、'.join(self._member_names()) or 'なし'})")
 
     def _start_playing(self):
         self.voice_client.play(self.output, after=self._on_play_stopped)
@@ -565,9 +587,13 @@ class VoiceSession:
             )
 
     def _live_config(self) -> types.LiveConnectConfig:
+        now = datetime.datetime.now(JST)
+        weekday = "月火水木金土日"[now.weekday()]
         return types.LiveConnectConfig(
             response_modalities=["AUDIO"],
-            system_instruction=SYSTEM_INSTRUCTION,
+            system_instruction=SYSTEM_INSTRUCTION + f"通話開始時刻: {now:%Y年%m月%d日}({weekday}) {now:%H:%M}\n",
+            # 天気やニュースなど、今の情報が必要な質問に答えられるようにする
+            tools=[types.Tool(google_search=types.GoogleSearch())],
             # 何を聞き取り何を話したかをログに出し、会話がズレたときに聞き間違いか判別できるようにする
             input_audio_transcription=types.AudioTranscriptionConfig(),
             output_audio_transcription=types.AudioTranscriptionConfig(),
@@ -578,7 +604,8 @@ class VoiceSession:
             ),
             # 圧縮なしの音声セッションは最大15分で打ち切られるため、古い履歴を圧縮して延命する。
             context_window_compression=types.ContextWindowCompressionConfig(
-                sliding_window=types.SlidingWindow(),
+                trigger_tokens=CONTEXT_TRIGGER_TOKENS,
+                sliding_window=types.SlidingWindow(target_tokens=CONTEXT_TARGET_TOKENS),
             ),
             # 1本のWebSocket接続は約10分で切られる。再開ハンドルで文脈を保ったまま繋ぎ直す。
             session_resumption=types.SessionResumptionConfig(handle=self._resume_handle),
@@ -596,8 +623,10 @@ class VoiceSession:
                              LIVE_MODEL, self.guild.id, resuming,
                              f"{TTS_MODEL}:{GEMINI_VOICE_ID}" if GEMINI_VOICE_ID else VOICE_NAME)
                     if not resuming:
+                        members = "、".join(self._member_names()) or "不明"
                         await session.send_client_content(
-                            turns=types.Content(role="user", parts=[types.Part(text=GREETING_PROMPT)]),
+                            turns=types.Content(role="user", parts=[
+                                types.Part(text=f"(通話メンバー: {members})\n{GREETING_PROMPT}")]),
                             turn_complete=True,
                         )
                     ended_by_idle = await self._run_connection(session)
@@ -643,22 +672,49 @@ class VoiceSession:
         # ことを実APIで確認済み)。入力が途切れたら無音を送ってから audio_stream_end を送る。
         sent_count = 0
         streaming = False
+        # 発話の出だしは MIN_UTTERANCE_BYTES 貯まるまで送らず、それより短く終わったら捨てる
+        pending = bytearray()
+        pending_speakers: set[int] = set()
+        last_tagged: frozenset[int] = frozenset()
+        mime = f"audio/pcm;rate={GEMINI_IN_RATE}"
         while True:
             try:
-                pcm = await asyncio.wait_for(self._send_queue.get(), timeout=INPUT_PAUSE_SECONDS)
+                item = await asyncio.wait_for(self._send_queue.get(), timeout=INPUT_PAUSE_SECONDS)
             except asyncio.TimeoutError:
                 if streaming:
-                    await session.send_realtime_input(
-                        audio=types.Blob(data=TRAILING_SILENCE, mime_type=f"audio/pcm;rate={GEMINI_IN_RATE}")
-                    )
+                    await session.send_realtime_input(audio=types.Blob(data=TRAILING_SILENCE, mime_type=mime))
                     await session.send_realtime_input(audio_stream_end=True)
                     STATS["stream_ends"] += 1
                     streaming = False
                     log.info("voice send: input paused, sent trailing silence + audio_stream_end")
+                elif pending:
+                    STATS["dropped_short"] += 1
+                    log.debug("voice send: dropped a %.2fs sound as too short", len(pending) / (GEMINI_IN_RATE * 2))
+                    pending.clear()
+                    pending_speakers.clear()
                 continue
-            await session.send_realtime_input(
-                audio=types.Blob(data=pcm, mime_type=f"audio/pcm;rate={GEMINI_IN_RATE}")
-            )
+            if isinstance(item, str):
+                await session.send_client_content(
+                    turns=types.Content(role="user", parts=[types.Part(text=item)]), turn_complete=False)
+                continue
+            pcm, speakers = item
+            if not streaming:
+                pending.extend(pcm)
+                pending_speakers |= speakers
+                if len(pending) < MIN_UTTERANCE_BYTES:
+                    continue
+                # 話し手が前の発言と変わったときだけ名前を伝える(毎回送るとその分トークンを使う)
+                tag = frozenset(pending_speakers)
+                if tag and tag != last_tagged:
+                    names = "、".join(sorted(self._name(uid) for uid in tag))
+                    await session.send_client_content(
+                        turns=types.Content(role="user", parts=[types.Part(text=f"(話し手: {names})")]),
+                        turn_complete=False)
+                    last_tagged = tag
+                pcm = bytes(pending)
+                pending.clear()
+                pending_speakers.clear()
+            await session.send_realtime_input(audio=types.Blob(data=pcm, mime_type=mime))
             streaming = True
             STATS["sent_chunks"] += 1
             sent_count += 1
@@ -980,6 +1036,11 @@ class Voice(commands.Cog):
         channel = session.voice_client.channel
         if channel and all(m.bot for m in channel.members):
             await self.leave(member.guild.id, "🚪 誰もいなくなったから通話から抜けるね")
+            return
+        was_in = before.channel is not None and before.channel.id == session.channel_id
+        is_in = after.channel is not None and after.channel.id == session.channel_id
+        if was_in != is_in and not member.bot:
+            session.on_member_moved(member, joined=is_in)
 
 
 async def setup(bot):
