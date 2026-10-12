@@ -2,3 +2,4 @@
 __pycache__/
 *.pyc
 voice_samples/
+style_data/
