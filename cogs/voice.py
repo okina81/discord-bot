@@ -90,9 +90,10 @@ VOICE_NAME = "Puck"  # 明るい・アップビートな男性声
 # クローン音声に対応したTTSモデルで読み上げ直す。
 TTS_MODEL = "gemini-3.8-flash-tts"
 TTS_SENTENCE_END = re.compile(r".+?(?:[。！？!?…]+|\n+)")
-# 読み上げの演技指示。TTSモデルは「〜な感じで読んで: 本文」の形で話し方を変えられる。
-# 指示まで読み上げてしまう指示文もあるため、tools/tts_style_test.py で試し聞きして
-# 問題ないと確認できたものだけ入れる。空なら指示なしで本文だけを読む。
+# 読み上げの声の調子を変えるタグ(例: "[relaxed]" "[tired]")。文の頭に付けて読ませる。
+# クローン音声では「〜な感じで読んで: 本文」のような文章の指示は日本語でも英語でも指示ごと
+# 読み上げてしまい、system_instructionは非対応だった(実APIで確認)。タグなら読み上げられない。
+# tools/tts_style_test.py で聞き比べて選ぶ。空ならタグなしで本文だけを読む。
 TTS_STYLE = ""
 # TTSモデルは1分あたりのリクエスト数に上限がある(無料枠は10回、本番ログで429を確認)。
 # 1返事で最大2〜3回使うため、残りが少ないときはその返事だけLiveの声で話して無音を避ける。
@@ -260,8 +261,8 @@ def tts_budget_left() -> int:
 
 
 def tts_prompt(text: str, style: str = TTS_STYLE) -> str:
-    """TTSモデルに渡す文。演技指示があれば「指示: 本文」の形にする。"""
-    return f"{style}: {text}" if style else text
+    """TTSモデルに渡す文。声の調子のタグがあれば文の頭に付ける。"""
+    return f"{style} {text}" if style else text
 
 
 async def tts_stream(text: str):
