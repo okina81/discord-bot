@@ -3,7 +3,7 @@ import datetime
 import discord
 from discord.ext import commands
 from config import JST, RECRUIT_KEYWORDS, ALLOWED_CHANNEL_IDS, RECRUIT_CHANNEL_ID
-from helpers import parse_duration, format_duration, parse_clock_time, extract_clock_time
+from helpers import parse_duration, format_duration, format_clock, parse_clock_time, extract_clock_time
 
 
 class Recruit(commands.Cog):
@@ -86,7 +86,7 @@ class Recruit(commands.Cog):
         start_at = poll_data["start_at"]
 
         if start_at:
-            time_str_base = f"{start_at.hour}時" + (f"{start_at.minute}分" if start_at.minute else "")
+            time_str_base = format_clock(start_at.hour, start_at.minute)
             dm_hint = (
                 f"🕐 **{time_str_base}から**のゲームに何分後に参加できる？\n"
                 f"例: `10m`（{time_str_base}の10分後）　`1h`（1時間後）　`15時30分から`（時刻で直接指定）"
@@ -121,7 +121,7 @@ class Recruit(commands.Cog):
             if start_at:
                 notify_at = start_at + datetime.timedelta(seconds=duration_sec)
                 seconds = max(0, int((notify_at - datetime.datetime.now(JST)).total_seconds()))
-                notify_str = f"{notify_at.hour}時" + (f"{notify_at.minute}分" if notify_at.minute else "")
+                notify_str = format_clock(notify_at.hour, notify_at.minute)
                 confirm = f"⏱️ わかった！{notify_str}（{time_str_base}の{format_duration(duration_sec)}後）に教えるね。"
                 notify = f"⏰ {member.mention} {notify_str}になったぞ！そろそろゲーム参加できる？"
             else:

@@ -79,11 +79,22 @@ AWS_REGION_LABEL = {
 }
 
 
-async def build_rankmap_embed():
-    url = f"https://api.mozambiquehe.re/maprotation?auth={APEX_API_KEY}&version=2"
+PLAYER_NOT_FOUND_MESSAGE = "❌ プレイヤーが見つからなかったよ（EA名とプラットフォームを確認してね）"
+
+
+def random_legend_message() -> str:
+    legend, catchphrase = random.choice(list(APEX_LEGENDS.items()))
+    return f"🎯 今日のレジェンドは **{legend}** だ！\n> {catchphrase}"
+
+
+async def _fetch_json(url: str):
     async with aiohttp.ClientSession() as session:
         async with session.get(url) as resp:
-            data = await resp.json(content_type=None)
+            return await resp.json(content_type=None)
+
+
+async def build_rankmap_embed():
+    data = await _fetch_json(f"https://api.mozambiquehe.re/maprotation?auth={APEX_API_KEY}&version=2")
     ranked = data.get("ranked", {})
     current = ranked.get("current", {})
     nxt = ranked.get("next", {})
@@ -101,21 +112,19 @@ async def build_rankmap_embed():
 
 
 async def build_apexstatus_embed():
-    url = f"https://api.mozambiquehe.re/servers?auth={APEX_API_KEY}"
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url) as resp:
-            data = await resp.json(content_type=None)
+    data = await _fetch_json(f"https://api.mozambiquehe.re/servers?auth={APEX_API_KEY}")
     embed = discord.Embed(title="🖥️ Apex Legends サーバー状態（PC）", color=discord.Color.dark_red())
     for key, label in PC_SERVICES.items():
         regions = data.get(key, {})
         if not isinstance(regions, dict):
             continue
+        regions = {k: v for k, v in regions.items() if isinstance(v, dict)}
         lines = [
             f"{'🟢' if v.get('Status') == 'UP' else '🔴'} {AWS_REGION_LABEL.get(k, k)}　{v.get('ResponseTime', '?')}ms"
-            for k, v in regions.items() if isinstance(v, dict)
+            for k, v in regions.items()
         ]
-        all_up = all(v.get("Status") == "UP" for v in regions.values() if isinstance(v, dict))
-        any_up = any(v.get("Status") == "UP" for v in regions.values() if isinstance(v, dict))
+        all_up = all(v.get("Status") == "UP" for v in regions.values())
+        any_up = any(v.get("Status") == "UP" for v in regions.values())
         icon = "🟢" if all_up else ("🟡" if any_up else "🔴")
         embed.add_field(name=f"{icon} {label}", value="\n".join(lines) or "データなし", inline=False)
     embed.set_footer(text="出典: Apex Legends Status API | AWS移行 2025年4月")
@@ -124,10 +133,9 @@ async def build_apexstatus_embed():
 
 async def build_apexstats_embed(username: str, platform: str = "PC"):
     platform = PLATFORM_ALIAS.get(platform.lower(), "PC")
-    url = f"https://api.mozambiquehe.re/bridge?auth={APEX_API_KEY}&player={username}&platform={platform}"
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url) as resp:
-            data = await resp.json(content_type=None)
+    data = await _fetch_json(
+        f"https://api.mozambiquehe.re/bridge?auth={APEX_API_KEY}&player={username}&platform={platform}"
+    )
     if "Error" in data:
         return None
     g = data.get("global", {})
@@ -174,10 +182,7 @@ def save_posted_links(links: set[str]):
 
 
 async def fetch_apex_news() -> list[dict]:
-    url = f"https://api.mozambiquehe.re/news?auth={APEX_API_KEY}"
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url) as resp:
-            return await resp.json(content_type=None)
+    return await _fetch_json(f"https://api.mozambiquehe.re/news?auth={APEX_API_KEY}")
 
 
 class Apex(commands.Cog):
@@ -222,44 +227,35 @@ class Apex(commands.Cog):
     async def before_check_apex_news(self):
         await self.bot.wait_until_ready()
 
-    @commands.command()
-    async def apex(self, ctx):
-        legend, catchphrase = random.choice(list(APEX_LEGENDS.items()))
-        await ctx.send(f"🎯 今日のレジェンドは **{legend}** だ！\n> {catchphrase}")
-
-    @commands.command()
-    async def rankmap(self, ctx):
+    async def _send_api_embed(self, ctx, build):
+        """APIから作ったembedを送る。buildがNoneを返したらプレイヤーが見つからなかったとみなす。"""
         if not APEX_API_KEY:
             await ctx.send("❌ APEX_API_KEY が設定されていないよ！")
             return
         try:
-            await ctx.send(embed=await build_rankmap_embed())
-        except Exception as e:
-            await ctx.send(f"❌ 取得に失敗したよ: {e}")
-
-    @commands.command()
-    async def apexstats(self, ctx, username: str, platform: str = "PC"):
-        if not APEX_API_KEY:
-            await ctx.send("❌ APEX_API_KEY が設定されていないよ！")
-            return
-        try:
-            embed = await build_apexstats_embed(username, platform)
+            embed = await build()
             if embed is None:
-                await ctx.send("❌ プレイヤーが見つからなかったよ（EA名とプラットフォームを確認してね）")
+                await ctx.send(PLAYER_NOT_FOUND_MESSAGE)
             else:
                 await ctx.send(embed=embed)
         except Exception as e:
             await ctx.send(f"❌ 取得に失敗したよ: {e}")
 
     @commands.command()
+    async def apex(self, ctx):
+        await ctx.send(random_legend_message())
+
+    @commands.command()
+    async def rankmap(self, ctx):
+        await self._send_api_embed(ctx, build_rankmap_embed)
+
+    @commands.command()
+    async def apexstats(self, ctx, username: str, platform: str = "PC"):
+        await self._send_api_embed(ctx, lambda: build_apexstats_embed(username, platform))
+
+    @commands.command()
     async def apexstatus(self, ctx):
-        if not APEX_API_KEY:
-            await ctx.send("❌ APEX_API_KEY が設定されていないよ！")
-            return
-        try:
-            await ctx.send(embed=await build_apexstatus_embed())
-        except Exception as e:
-            await ctx.send(f"❌ 取得に失敗したよ: {e}")
+        await self._send_api_embed(ctx, build_apexstatus_embed)
 
 
 async def setup(bot):

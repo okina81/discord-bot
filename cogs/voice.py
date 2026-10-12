@@ -842,11 +842,15 @@ class VoiceSession:
         if sentence:
             self._tts_queue.put_nowait(sentence)
 
-    def _tts_cancel(self):
+    def _tts_discard_pending(self):
+        """まだ読み上げていない文を捨てる。"""
         self._tts_text = ""
-        self._tts_epoch += 1  # 読み上げ中の文は、以降の音声を再生バッファに積まない
         while not self._tts_queue.empty():
             self._tts_queue.get_nowait()
+
+    def _tts_cancel(self):
+        self._tts_epoch += 1  # 読み上げ中の文は、以降の音声を再生バッファに積まない
+        self._tts_discard_pending()
 
     def say(self, text: str):
         """!say コマンド用。通話中の会話に割り込まず、順番が来たらクローン音声で読み上げる。"""
@@ -876,9 +880,7 @@ class VoiceSession:
                 if epoch == self._tts_epoch and self._in_turn:
                     # 返事の残りはLiveの声で流す(読めなかった分は飛ぶが、無音のままよりよい)
                     self._turn_uses_tts = False
-                    self._tts_text = ""
-                    while not self._tts_queue.empty():
-                        self._tts_queue.get_nowait()
+                    self._tts_discard_pending()
             except Exception as e:
                 STATS["tts_errors"] += 1
                 log.warning("voice tts: failed to synthesize %r: %r", sentence, e)

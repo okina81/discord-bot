@@ -2,6 +2,9 @@ import re
 import datetime
 from config import JST
 
+_CLOCK_KANJI = r'(\d{1,2})時(?:(\d{1,2})分)?(?:から)?'
+_CLOCK_COLON = r'(\d{1,2}):(\d{2})(?:から)?'
+
 
 def parse_duration(text):
     match = re.fullmatch(r'(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?', text.strip())
@@ -24,17 +27,13 @@ def format_duration(seconds):
     return "".join(parts)
 
 
-def parse_clock_time(text):
-    text = text.strip()
-    m = re.fullmatch(r'(\d{1,2})時(?:(\d{1,2})分)?(?:から)?', text)
-    if not m:
-        m2 = re.fullmatch(r'(\d{1,2}):(\d{2})(?:から)?', text)
-        if not m2:
-            return None
-        hour, minute = int(m2.group(1)), int(m2.group(2))
-    else:
-        hour = int(m.group(1))
-        minute = int(m.group(2) or 0)
+def format_clock(hour, minute):
+    """15時、15時30分 のように時刻を表す(0分なら分を省く)。"""
+    return f"{hour}時" + (f"{minute}分" if minute else "")
+
+
+def _next_clock_time(hour, minute):
+    """次にその時刻になるまでの秒数・表示用の文字列・日時を返す。範囲外ならNone。"""
     if not (0 <= hour <= 23 and 0 <= minute <= 59):
         return None
     now = datetime.datetime.now(JST)
@@ -42,22 +41,23 @@ def parse_clock_time(text):
     if target <= now:
         target += datetime.timedelta(days=1)
     seconds = int((target - now).total_seconds())
-    time_str = f"{hour}時" + (f"{minute}分" if minute else "")
+    return seconds, format_clock(hour, minute), target
+
+
+def parse_clock_time(text):
+    text = text.strip()
+    m = re.fullmatch(_CLOCK_KANJI, text) or re.fullmatch(_CLOCK_COLON, text)
+    if not m:
+        return None
+    result = _next_clock_time(int(m.group(1)), int(m.group(2) or 0))
+    if result is None:
+        return None
+    seconds, time_str, _ = result
     return seconds, time_str
 
 
 def extract_clock_time(text):
-    m = re.search(r'(\d{1,2})時(?:(\d{1,2})分)?(?:から)?', text)
+    m = re.search(_CLOCK_KANJI, text)
     if not m:
         return None
-    hour = int(m.group(1))
-    minute = int(m.group(2) or 0)
-    if not (0 <= hour <= 23 and 0 <= minute <= 59):
-        return None
-    now = datetime.datetime.now(JST)
-    target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-    if target <= now:
-        target += datetime.timedelta(days=1)
-    seconds = int((target - now).total_seconds())
-    time_str = f"{hour}時" + (f"{minute}分" if minute else "")
-    return seconds, time_str, target
+    return _next_clock_time(int(m.group(1)), int(m.group(2) or 0))

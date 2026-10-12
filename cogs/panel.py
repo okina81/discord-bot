@@ -1,15 +1,10 @@
-import random
 import discord
 from discord.ext import commands
-from config import GEMINI_API_KEY
 from cogs.apex import (
-    APEX_LEGENDS, APEX_API_KEY,
+    PLAYER_NOT_FOUND_MESSAGE, random_legend_message,
     build_rankmap_embed, build_apexstatus_embed, build_apexstats_embed,
 )
-from cogs.fun import (
-    NEWS_TEMPLATES,
-    fill_template, scan_messages, generate_ai_news,
-)
+from cogs.fun import build_news_embed
 from cogs.utils import build_ping_embed
 
 
@@ -22,7 +17,7 @@ class ApexStatsModal(discord.ui.Modal, title="👤 Apex プレイヤー統計"):
         plat = self.platform.value.strip() or "PC"
         embed = await build_apexstats_embed(self.username.value.strip(), plat)
         if embed is None:
-            await interaction.followup.send("❌ プレイヤーが見つからなかったよ（EA名とプラットフォームを確認してね）")
+            await interaction.followup.send(PLAYER_NOT_FOUND_MESSAGE)
         else:
             await interaction.followup.send(embed=embed)
 
@@ -49,8 +44,7 @@ class PanelView(discord.ui.View):
 
     @discord.ui.button(label="🎯 レジェンド", style=discord.ButtonStyle.secondary, row=0)
     async def btn_apex(self, interaction: discord.Interaction, button: discord.ui.Button):
-        legend, catchphrase = random.choice(list(APEX_LEGENDS.items()))
-        await interaction.response.send_message(f"🎯 今日のレジェンドは **{legend}** だ！\n> {catchphrase}")
+        await interaction.response.send_message(random_legend_message())
 
     @discord.ui.button(label="👤 Apex統計", style=discord.ButtonStyle.primary, row=0)
     async def btn_apexstats(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -71,22 +65,7 @@ class PanelView(discord.ui.View):
             await interaction.response.send_message("❌ メンバーが足りないよ！")
             return
         await interaction.response.defer(thinking=True)
-        ai_text = None
-        if GEMINI_API_KEY:
-            history = await scan_messages(interaction.guild)
-            names = [m.display_name for m in members]
-            ai_text = await generate_ai_news(history, names)
-        if ai_text:
-            embed = discord.Embed(title="📰 速報 — 今北Bot通信社", description=ai_text, color=discord.Color.yellow())
-            embed.set_footer(text="※ AIがチャット履歴を学習して生成したフィクションです")
-        else:
-            count = random.randint(2, 3)
-            items = random.sample(NEWS_TEMPLATES, min(count, len(NEWS_TEMPLATES)))
-            icons = ["📰", "⚡", "🔥", "💥", "🚨"]
-            lines = [f"{icons[i % len(icons)]} {fill_template(t, members)}" for i, t in enumerate(items)]
-            embed = discord.Embed(title="📰 速報 — 今北Bot通信社", description="\n\n".join(lines), color=discord.Color.yellow())
-            embed.set_footer(text="※ この記事はフィクションです")
-        await interaction.followup.send(embed=embed)
+        await interaction.followup.send(embed=await build_news_embed(interaction.guild, members))
 
 
 class Panel(commands.Cog):
