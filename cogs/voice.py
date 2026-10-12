@@ -90,6 +90,10 @@ VOICE_NAME = "Puck"  # 明るい・アップビートな男性声
 # クローン音声に対応したTTSモデルで読み上げ直す。
 TTS_MODEL = "gemini-3.8-flash-tts"
 TTS_SENTENCE_END = re.compile(r".+?(?:[。！？!?…]+|\n+)")
+# 読み上げの演技指示。TTSモデルは「〜な感じで読んで: 本文」の形で話し方を変えられる。
+# 指示まで読み上げてしまう指示文もあるため、tools/tts_style_test.py で試し聞きして
+# 問題ないと確認できたものだけ入れる。空なら指示なしで本文だけを読む。
+TTS_STYLE = ""
 # TTSモデルは1分あたりのリクエスト数に上限がある(無料枠は10回、本番ログで429を確認)。
 # 1返事で最大2〜3回使うため、残りが少ないときはその返事だけLiveの声で話して無音を避ける。
 TTS_MAX_REQUESTS_PER_MINUTE = int(os.getenv("GEMINI_TTS_RPM", "10"))
@@ -242,6 +246,11 @@ def tts_budget_left() -> int:
     return TTS_MAX_REQUESTS_PER_MINUTE - len(_tts_request_times)
 
 
+def tts_prompt(text: str, style: str = TTS_STYLE) -> str:
+    """TTSモデルに渡す文。演技指示があれば「指示: 本文」の形にする。"""
+    return f"{style}: {text}" if style else text
+
+
 async def tts_stream(text: str):
     """クローン音声(GEMINI_VOICE_ID)でtextを読み上げた24kHz mono 16bit PCMを、生成された順に返す。"""
     global _tts_cooldown_until
@@ -251,7 +260,8 @@ async def tts_stream(text: str):
     )
     _tts_request_times.append(time.monotonic())
     try:
-        stream = await gemini_client.aio.models.generate_content_stream(model=TTS_MODEL, contents=text, config=config)
+        stream = await gemini_client.aio.models.generate_content_stream(
+            model=TTS_MODEL, contents=tts_prompt(text), config=config)
         async for chunk in stream:
             content = chunk.candidates[0].content if chunk.candidates else None
             for part in content.parts if content and content.parts else []:
