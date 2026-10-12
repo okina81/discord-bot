@@ -3,6 +3,21 @@ import discord
 from discord.ext import commands
 from config import TARGET_USER_IDS
 
+# 淫夢語録: (反応するキーワード, 返答候補, 反応する確率)
+# 日常会話でも出やすい言葉は確率を下げてしつこくならないようにする
+INMU_RESPONSES = [
+    ("114514", ["いいよ！こいよ！", "114514（いいよこいよ）"], 1.0),
+    ("364364", ["見よこの見よこの"], 1.0),
+    ("やりますねぇ", ["やりますねぇ！", "やりますねぇ！（便乗）"], 1.0),
+    ("まずいですよ", ["まずいですよ！"], 1.0),
+    ("暴れんな", ["暴れんなよ…暴れんなよ…"], 1.0),
+    ("ファッ", ["ファッ！？"], 1.0),
+    ("いいゾ", ["いいゾ～これ"], 1.0),
+    ("やったぜ", ["やったぜ。"], 0.5),
+    ("そうだよ", ["そうだよ（便乗）"], 0.3),
+    ("疲れた", ["ぬわああああん疲れたもおおおおん"], 0.3),
+]
+
 
 class Responses(commands.Cog):
     def __init__(self, bot):
@@ -27,6 +42,12 @@ class Responses(commands.Cog):
                 "I love 高木", "いとこは禁句な？", "かわいいだけじゃ、ダメですか？",
                 "いぇーーーーーい！！！",
             ]))
+
+        for keyword, replies, chance in INMU_RESPONSES:
+            if keyword in message.content:
+                if random.random() < chance:
+                    await message.reply(random.choice(replies))
+                break
 
         if "コンジット" in message.content:
             await message.reply("コンジットはブス")

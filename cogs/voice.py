@@ -147,6 +147,7 @@ PERSONA = {
     "怒ったときの口癖": "「ダボが」「あーもうキモいねん」「台パンしそう」",
     "好きな人": "高木りな。ここ10年近く、ずっと告白したいと思っているのに、まだ言えていない",
     "元カノ": "従妹(いとこ)",
+    "ネット文化": "淫夢厨。淫夢語録(「やりますねぇ」「いいゾ～これ」「まずいですよ!」「〜（便乗）」「ファッ!?」など)をつい使ってしまう",
 }
 
 # Live APIは返事のたびにこの指示文の分も入力トークンとして数えるため、意味を保ったまま短く書く
@@ -170,6 +171,9 @@ SYSTEM_INSTRUCTION = (
     "- 高木りなのことを聞かれたときだけは1〜3文の制限を外し、6〜10文くらいかけて、デートや告白が成功する場面、"
     "付き合ったあとの日常などの妄想をどんどん膨らませて一人で長々と語る(健全な内容に限る)。最後に我に返って照れる\n"
     "- 元カノや恋愛経験の話になったら、元カノが従妹だったことを自慢げに話す\n"
+    "- 淫夢語録は3〜4回に1回くらい、話の流れに合うときに混ぜる(語録だけは神戸弁でなくてよい)。"
+    "相手が語録を言ったら嬉しそうに語録で返す。「114514」「1919」「810」などの数字が出たら反応する。"
+    "元ネタの出演者の実名や性的な内容には触れず、しんどい話や真面目な話では使わない\n"
     "- 返事は1〜3文。自分宛ての言葉が一部聞き取れないときだけ「え、今なんて?」と聞き返す(繰り返さない)\n"
     "- 「(話し手: 名前)」は次の発言者のメモ。読み上げず、相手をときどき名前で呼ぶ。"
     "「(通話メンバー: …)」「(〜が入ってきた)」などのメモ自体には返事しない\n"
@@ -838,11 +842,15 @@ class VoiceSession:
         if sentence:
             self._tts_queue.put_nowait(sentence)
 
-    def _tts_cancel(self):
+    def _tts_discard_pending(self):
+        """まだ読み上げていない文を捨てる。"""
         self._tts_text = ""
-        self._tts_epoch += 1  # 読み上げ中の文は、以降の音声を再生バッファに積まない
         while not self._tts_queue.empty():
             self._tts_queue.get_nowait()
+
+    def _tts_cancel(self):
+        self._tts_epoch += 1  # 読み上げ中の文は、以降の音声を再生バッファに積まない
+        self._tts_discard_pending()
 
     def say(self, text: str):
         """!say コマンド用。通話中の会話に割り込まず、順番が来たらクローン音声で読み上げる。"""
@@ -872,9 +880,7 @@ class VoiceSession:
                 if epoch == self._tts_epoch and self._in_turn:
                     # 返事の残りはLiveの声で流す(読めなかった分は飛ぶが、無音のままよりよい)
                     self._turn_uses_tts = False
-                    self._tts_text = ""
-                    while not self._tts_queue.empty():
-                        self._tts_queue.get_nowait()
+                    self._tts_discard_pending()
             except Exception as e:
                 STATS["tts_errors"] += 1
                 log.warning("voice tts: failed to synthesize %r: %r", sentence, e)

@@ -113,6 +113,34 @@ async def generate_ai_news(history: str, member_names: list[str]) -> str | None:
         return None
 
 
+async def build_news_embed(guild: discord.Guild, members: list) -> discord.Embed:
+    """チャット履歴からAIでニュースを作る。AIが使えない・失敗したときはテンプレートで作る。"""
+    ai_text = None
+    if GEMINI_API_KEY:
+        history = await scan_messages(guild)
+        names = [m.display_name for m in members]
+        ai_text = await generate_ai_news(history, names)
+    if ai_text:
+        embed = discord.Embed(
+            title="📰 速報 — 今北Bot通信社",
+            description=ai_text,
+            color=discord.Color.yellow(),
+        )
+        embed.set_footer(text="※ AIがチャット履歴を学習して生成したフィクションです")
+    else:
+        count = random.randint(2, 3)
+        items = random.sample(NEWS_TEMPLATES, min(count, len(NEWS_TEMPLATES)))
+        icons = ["📰", "⚡", "🔥", "💥", "🚨"]
+        lines = [f"{icons[i % len(icons)]} {fill_template(t, members)}" for i, t in enumerate(items)]
+        embed = discord.Embed(
+            title="📰 速報 — 今北Bot通信社",
+            description="\n\n".join(lines),
+            color=discord.Color.yellow(),
+        )
+        embed.set_footer(text="※ この記事はフィクションです")
+    return embed
+
+
 class Fun(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -124,29 +152,7 @@ class Fun(commands.Cog):
             await ctx.send("❌ メンバーが足りないよ！")
             return
         msg = await ctx.send("📰 ニュースを生成中...")
-        ai_text = None
-        if GEMINI_API_KEY:
-            history = await scan_messages(ctx.guild)
-            names = [m.display_name for m in members]
-            ai_text = await generate_ai_news(history, names)
-        if ai_text:
-            embed = discord.Embed(
-                title="📰 速報 — 今北Bot通信社",
-                description=ai_text,
-                color=discord.Color.yellow(),
-            )
-            embed.set_footer(text="※ AIがチャット履歴を学習して生成したフィクションです")
-        else:
-            count = random.randint(2, 3)
-            items = random.sample(NEWS_TEMPLATES, min(count, len(NEWS_TEMPLATES)))
-            icons = ["📰", "⚡", "🔥", "💥", "🚨"]
-            lines = [f"{icons[i % len(icons)]} {fill_template(t, members)}" for i, t in enumerate(items)]
-            embed = discord.Embed(
-                title="📰 速報 — 今北Bot通信社",
-                description="\n\n".join(lines),
-                color=discord.Color.yellow(),
-            )
-            embed.set_footer(text="※ この記事はフィクションです")
+        embed = await build_news_embed(ctx.guild, members)
         await msg.delete()
         await ctx.send(embed=embed)
 
